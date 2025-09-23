@@ -18,8 +18,8 @@ func get(args []resp.Value) resp.Value {
 	val, ok := globalStore.Get(key)
 	if !ok {
 		return resp.Value{
-			Type: resp.BULKSTRING,
-			Str:  "",
+			Type:  resp.BULKSTRING,
+			IsNil: true,
 		}
 	}
 	return resp.Value{
