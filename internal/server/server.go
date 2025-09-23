@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/william1nguyen/valkeydb/internal/command"
 	"github.com/william1nguyen/valkeydb/internal/resp"
@@ -31,39 +32,27 @@ func handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
-	writer := bufio.NewWriter(conn)
 
 	for {
-		v, err := resp.Read(reader)
-
+		req, err := resp.Decode(reader)
 		if err != nil {
 			return
 		}
 
-		if v.Type != resp.ARRAY || len(v.Array) == 0 {
-			_ = resp.Write(writer, resp.Value{
+		cmd := strings.ToUpper(req.Array[0].Str)
+		handler, ok := command.Lookup(cmd)
+
+		if !ok {
+			v := resp.Value{
 				Type: resp.ERROR,
-				Str:  "ERR invalid command",
-			})
-			_ = writer.Flush()
+				Str:  "ERR unkown command",
+			}
+			conn.Write([]byte(resp.Encode(v)))
 			continue
 		}
 
-		cmd := v.Array[0].Str
-		args := v.Array[1:]
-
-		if h, ok := command.Lookup(cmd); ok {
-			reply := h(args)
-			_ = resp.Write(writer, reply)
-		} else {
-			_ = resp.Write(writer, resp.Value{
-				Type: resp.ERROR,
-				Str:  "ERR unknown command",
-			})
-		}
-
-		if err := writer.Flush(); err != nil {
-			return
-		}
+		args := req.Array[1:]
+		result := handler(args)
+		conn.Write([]byte(resp.Encode(result)))
 	}
 }
