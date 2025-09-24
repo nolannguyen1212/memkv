@@ -2,7 +2,7 @@ package server
 
 import (
 	"bufio"
-	"fmt"
+	"log"
 	"net"
 	"strings"
 
@@ -10,17 +10,18 @@ import (
 	"github.com/william1nguyen/valkeydb/internal/resp"
 )
 
-func ListenAndServer(addr string) error {
+func ListenAndServe(addr string) error {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Server listening on %s\n", addr)
+	log.Printf("listening on %s", addr)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			log.Printf("accept error: %v", err)
 			continue
 		}
 
@@ -32,11 +33,26 @@ func handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
 
 	for {
 		req, err := resp.Decode(reader)
 		if err != nil {
+			log.Printf("%s decode error: %v", conn.RemoteAddr(), err)
 			return
+		}
+
+		if req.Type != resp.ARRAY || len(req.Array) == 0 {
+			v := resp.Value{Type: resp.ERROR, Str: "ERR protocol error"}
+			if _, werr := writer.WriteString(resp.Encode(v)); werr != nil {
+				log.Printf("%s write error: %v", conn.RemoteAddr(), werr)
+				return
+			}
+			if ferr := writer.Flush(); ferr != nil {
+				log.Printf("%s flush error: %v", conn.RemoteAddr(), ferr)
+				return
+			}
+			continue
 		}
 
 		cmd := strings.ToUpper(req.Array[0].Str)
@@ -45,14 +61,28 @@ func handleConn(conn net.Conn) {
 		if !ok {
 			v := resp.Value{
 				Type: resp.ERROR,
-				Str:  "ERR unkown command",
+				Str:  "ERR unknown command",
 			}
-			conn.Write([]byte(resp.Encode(v)))
+			if _, werr := writer.WriteString(resp.Encode(v)); werr != nil {
+				log.Printf("%s write error: %v", conn.RemoteAddr(), werr)
+				return
+			}
+			if ferr := writer.Flush(); ferr != nil {
+				log.Printf("%s flush error: %v", conn.RemoteAddr(), ferr)
+				return
+			}
 			continue
 		}
 
 		args := req.Array[1:]
 		result := handler(args)
-		conn.Write([]byte(resp.Encode(result)))
+		if _, werr := writer.WriteString(resp.Encode(result)); werr != nil {
+			log.Printf("%s write error: %v", conn.RemoteAddr(), werr)
+			return
+		}
+		if ferr := writer.Flush(); ferr != nil {
+			log.Printf("%s flush error: %v", conn.RemoteAddr(), ferr)
+			return
+		}
 	}
 }

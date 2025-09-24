@@ -44,7 +44,10 @@ func readline(r *bufio.Reader) (string, error) {
 }
 
 func readString(r *bufio.Reader) (Value, error) {
-	line, _ := readline(r)
+	line, err := readline(r)
+	if err != nil {
+		return Value{}, err
+	}
 	return Value{
 		Type: STRING,
 		Str:  line,
@@ -52,7 +55,10 @@ func readString(r *bufio.Reader) (Value, error) {
 }
 
 func readError(r *bufio.Reader) (Value, error) {
-	line, _ := readline(r)
+	line, err := readline(r)
+	if err != nil {
+		return Value{}, err
+	}
 	return Value{
 		Type: ERROR,
 		Str:  line,
@@ -60,7 +66,10 @@ func readError(r *bufio.Reader) (Value, error) {
 }
 
 func readInt(r *bufio.Reader) (Value, error) {
-	line, _ := readline(r)
+	line, err := readline(r)
+	if err != nil {
+		return Value{}, err
+	}
 	n, err := strconv.ParseInt(line, 10, 64)
 	if err != nil {
 		return Value{}, err
@@ -72,8 +81,14 @@ func readInt(r *bufio.Reader) (Value, error) {
 }
 
 func readBulkString(r *bufio.Reader) (Value, error) {
-	line, _ := readline(r)
-	length, _ := strconv.Atoi(line)
+	line, err := readline(r)
+	if err != nil {
+		return Value{}, err
+	}
+	length, err := strconv.Atoi(line)
+	if err != nil {
+		return Value{}, err
+	}
 	if length == -1 {
 		return Value{
 			Type:  BULKSTRING,
@@ -92,8 +107,14 @@ func readBulkString(r *bufio.Reader) (Value, error) {
 }
 
 func readArray(r *bufio.Reader) (Value, error) {
-	line, _ := readline(r)
-	count, _ := strconv.Atoi(line)
+	line, err := readline(r)
+	if err != nil {
+		return Value{}, err
+	}
+	count, err := strconv.Atoi(line)
+	if err != nil {
+		return Value{}, err
+	}
 
 	if count == -1 {
 		return Value{
