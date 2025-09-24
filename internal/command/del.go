@@ -19,7 +19,8 @@ func del(args []resp.Value) resp.Value {
 		keys[i] = a.Str
 	}
 
-	n := globalStore.Del(keys...)
+	n := db.Delete(keys...)
+
 	return resp.Value{
 		Type: resp.INT,
 		Int:  int64(n),

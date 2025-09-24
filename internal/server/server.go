@@ -8,15 +8,29 @@ import (
 
 	"github.com/william1nguyen/valkeydb/internal/command"
 	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
-func ListenAndServe(addr string) error {
-	listener, err := net.Listen("tcp", addr)
+type Server struct {
+	addr string
+}
+
+func New(addr string) *Server {
+	return &Server{addr: addr}
+}
+
+func (s *Server) ListenAndServe() error {
+	listener, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("listening on %s", addr)
+	defer listener.Close()
+
+	mem := store.NewMemoryStore()
+	command.Init(mem)
+
+	log.Printf("listening on %s", s.addr)
 
 	for {
 		conn, err := listener.Accept()

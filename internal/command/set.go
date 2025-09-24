@@ -1,15 +1,11 @@
 package command
 
 import (
+	"strconv"
+	"time"
+
 	"github.com/william1nguyen/valkeydb/internal/resp"
-	"github.com/william1nguyen/valkeydb/internal/store"
 )
-
-var globalStore = store.New()
-
-func init() {
-	Register("SET", set)
-}
 
 func set(args []resp.Value) resp.Value {
 	if len(args) < 2 {
@@ -18,9 +14,19 @@ func set(args []resp.Value) resp.Value {
 			Str:  "ERR wrong number of arguments for 'set'",
 		}
 	}
+
 	key := args[0].Str
 	val := args[1].Str
-	globalStore.Set(key, val)
+	ttl := time.Duration(0)
+
+	if len(args) > 2 {
+		if seconds, err := strconv.Atoi(args[2].Str); err == nil && seconds > 0 {
+			ttl = time.Duration(seconds) * time.Second
+		}
+	}
+
+	db.Set(key, val, ttl)
+
 	return resp.Value{
 		Type: resp.STRING,
 		Str:  "OK",

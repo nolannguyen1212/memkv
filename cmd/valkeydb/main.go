@@ -7,7 +7,8 @@ import (
 )
 
 func main() {
-	if err := server.ListenAndServe(":6379"); err != nil {
+	s := server.New(":6379")
+	if err := s.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
