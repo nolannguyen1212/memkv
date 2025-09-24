@@ -1,6 +1,7 @@
 package store
 
 import (
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -12,6 +13,7 @@ type entry struct {
 
 type MemoryStore struct {
 	mu      sync.RWMutex
+	ttlKeys []string
 	records map[string]entry
 	quit    chan struct{}
 }
@@ -37,6 +39,7 @@ func (m *MemoryStore) Set(key, value string, ttl time.Duration) {
 
 	if ttl > 0 {
 		e.expiredAt = time.Now().Add(ttl)
+		m.addTTLKey(key)
 	}
 
 	m.records[key] = e
@@ -69,6 +72,7 @@ func (m *MemoryStore) Delete(keys ...string) int {
 	for _, k := range keys {
 		if _, ok := m.records[k]; ok {
 			delete(m.records, k)
+			m.removeTTLKey(k)
 			removed++
 		}
 	}
@@ -126,21 +130,75 @@ func (m *MemoryStore) expireLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			m.cleanExpired()
+			m.mu.Lock()
+			m.sampleExpire(20)
+			m.mu.Unlock()
 		case <-m.quit:
 			return
 		}
 	}
 }
 
-func (m *MemoryStore) cleanExpired() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *MemoryStore) sampleExpire(batchSize int) {
+	if len(m.ttlKeys) == 0 {
+		return
+	}
 
 	now := time.Now()
-	for k, e := range m.records {
-		if !e.expiredAt.IsZero() && now.After(e.expiredAt) {
-			delete(m.records, k)
+	maxCycles := 3
+
+	for range maxCycles {
+		if len(m.ttlKeys) == 0 {
+			return
+		}
+
+		checked := 0
+		expired := 0
+
+		for i := 0; i < batchSize && len(m.ttlKeys) > 0; i++ {
+			idx := rand.IntN(len(m.ttlKeys))
+			key := m.ttlKeys[idx]
+
+			e, ok := m.records[key]
+			if !ok {
+				m.removeTTLKeyAt(idx)
+				continue
+			}
+
+			checked++
+			if !e.expiredAt.IsZero() && now.After(e.expiredAt) {
+				delete(m.records, key)
+				m.removeTTLKeyAt(idx)
+				expired++
+			}
+		}
+
+		if checked == 0 || expired*4 < checked {
+			return
 		}
 	}
+}
+
+func (m *MemoryStore) addTTLKey(k string) {
+	for _, key := range m.ttlKeys {
+		if key == k {
+			return
+		}
+	}
+	m.ttlKeys = append(m.ttlKeys, k)
+}
+
+func (m *MemoryStore) removeTTLKey(k string) {
+	for i, key := range m.ttlKeys {
+		if key == k {
+			m.removeTTLKeyAt(i)
+			return
+		}
+	}
+}
+
+func (m *MemoryStore) removeTTLKeyAt(i int) {
+	last := len(m.ttlKeys) - 1
+	m.ttlKeys[i] = m.ttlKeys[last]
+	m.ttlKeys = m.ttlKeys[:last]
 }
