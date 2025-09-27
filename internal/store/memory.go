@@ -13,13 +13,14 @@ type entry struct {
 
 type MemoryStore struct {
 	mu      sync.RWMutex
-	ttlKeys []string
+	ttlKeys map[string]struct{}
 	records map[string]entry
 	quit    chan struct{}
 }
 
 func NewMemoryStore() *MemoryStore {
 	m := &MemoryStore{
+		ttlKeys: make(map[string]struct{}),
 		records: make(map[string]entry),
 		quit:    make(chan struct{}),
 	}
@@ -56,7 +57,10 @@ func (m *MemoryStore) Get(key string) (string, bool) {
 
 	if !e.expiredAt.IsZero() && time.Now().After(e.expiredAt) {
 		m.mu.Lock()
-		delete(m.records, key)
+		if e, ok := m.records[key]; ok && !e.expiredAt.IsZero() && time.Now().After(e.expiredAt) {
+			delete(m.records, key)
+			m.removeTTLKey(key)
+		}
 		m.mu.Unlock()
 		return "", false
 	}
@@ -115,7 +119,10 @@ func (m *MemoryStore) TTL(key string) int64 {
 	remaining := time.Until(e.expiredAt).Seconds()
 	if remaining < 0 {
 		m.mu.Lock()
-		delete(m.records, key)
+		if e, ok := m.records[key]; ok && !e.expiredAt.IsZero() && time.Until(e.expiredAt).Seconds() < 0 {
+			delete(m.records, key)
+			m.removeTTLKey(key)
+		}
 		m.mu.Unlock()
 		return -2
 	}
@@ -155,20 +162,30 @@ func (m *MemoryStore) sampleExpire(batchSize int) {
 		checked := 0
 		expired := 0
 
-		for i := 0; i < batchSize && len(m.ttlKeys) > 0; i++ {
-			idx := rand.IntN(len(m.ttlKeys))
-			key := m.ttlKeys[idx]
+		keys := make([]string, 0, len(m.ttlKeys))
+		for k := range m.ttlKeys {
+			keys = append(keys, k)
+		}
+
+		sampleSize := batchSize
+		if sampleSize > len(keys) {
+			sampleSize = len(keys)
+		}
+
+		for i := 0; i < sampleSize; i++ {
+			idx := rand.IntN(len(keys))
+			key := keys[idx]
 
 			e, ok := m.records[key]
 			if !ok {
-				m.removeTTLKeyAt(idx)
+				m.removeTTLKey(key)
 				continue
 			}
 
 			checked++
 			if !e.expiredAt.IsZero() && now.After(e.expiredAt) {
 				delete(m.records, key)
-				m.removeTTLKeyAt(idx)
+				m.removeTTLKey(key)
 				expired++
 			}
 		}
@@ -180,25 +197,9 @@ func (m *MemoryStore) sampleExpire(batchSize int) {
 }
 
 func (m *MemoryStore) addTTLKey(k string) {
-	for _, key := range m.ttlKeys {
-		if key == k {
-			return
-		}
-	}
-	m.ttlKeys = append(m.ttlKeys, k)
+	m.ttlKeys[k] = struct{}{}
 }
 
 func (m *MemoryStore) removeTTLKey(k string) {
-	for i, key := range m.ttlKeys {
-		if key == k {
-			m.removeTTLKeyAt(i)
-			return
-		}
-	}
-}
-
-func (m *MemoryStore) removeTTLKeyAt(i int) {
-	last := len(m.ttlKeys) - 1
-	m.ttlKeys[i] = m.ttlKeys[last]
-	m.ttlKeys = m.ttlKeys[:last]
+	delete(m.ttlKeys, k)
 }
