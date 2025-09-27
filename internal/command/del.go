@@ -2,10 +2,6 @@ package command
 
 import "github.com/william1nguyen/valkeydb/internal/resp"
 
-func init() {
-	Register("DEL", del)
-}
-
 func del(args []resp.Value) resp.Value {
 	if len(args) < 1 {
 		return resp.Value{
