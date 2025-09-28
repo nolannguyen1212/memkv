@@ -103,6 +103,26 @@ func (m *MemoryStore) Expire(key string, ttl time.Duration) bool {
 	return true
 }
 
+func (m *MemoryStore) ExpireAt(key string, at time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	e, ok := m.records[key]
+	if !ok {
+		return false
+	}
+
+	if at.Before(time.Now()) {
+		delete(m.records, key)
+		return true
+	}
+
+	e.expiredAt = at
+	m.records[key] = e
+
+	return true
+}
+
 func (m *MemoryStore) TTL(key string) int64 {
 	m.mu.RLock()
 	e, ok := m.records[key]

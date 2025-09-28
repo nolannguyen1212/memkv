@@ -17,6 +17,24 @@ func del(args []resp.Value) resp.Value {
 
 	n := db.Delete(keys...)
 
+	if aofHandler != nil {
+		arr := []resp.Value{{
+			Type: resp.STRING, Str: "DEL",
+		}}
+
+		for _, k := range keys {
+			arr = append(arr, resp.Value{
+				Type: resp.BULKSTRING,
+				Str:  k,
+			})
+		}
+
+		aofHandler.Append(resp.Value{
+			Type:  resp.ARRAY,
+			Array: arr,
+		})
+	}
+
 	return resp.Value{
 		Type: resp.INT,
 		Int:  int64(n),

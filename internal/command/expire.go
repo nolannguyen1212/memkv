@@ -26,15 +26,29 @@ func expire(args []resp.Value) resp.Value {
 	}
 
 	ok := db.Expire(key, time.Duration(seconds)*time.Second)
-	if ok {
+	at := time.Now().Add(time.Duration(seconds) * time.Second)
+
+	if !ok {
 		return resp.Value{
 			Type: resp.INT,
-			Int:  1,
+			Int:  0,
 		}
+	}
+
+	if aofHandler != nil {
+		aofHandler.Append(resp.Value{
+			Type: resp.ARRAY,
+			Array: []resp.Value{
+				{Type: resp.STRING, Str: "PEXPIREAT"},
+				{Type: resp.BULKSTRING, Str: key},
+				{Type: resp.BULKSTRING, Str: strconv.FormatInt(at.UnixMilli(), 10)},
+			},
+		})
 	}
 
 	return resp.Value{
 		Type: resp.INT,
-		Int:  0,
+		Int:  1,
 	}
+
 }

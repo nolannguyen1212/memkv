@@ -27,6 +27,17 @@ func set(args []resp.Value) resp.Value {
 
 	db.Set(key, val, ttl)
 
+	if aofHandler != nil {
+		aofHandler.Append(resp.Value{
+			Type: resp.ARRAY,
+			Array: []resp.Value{
+				{Type: resp.STRING, Str: "SET"},
+				{Type: resp.BULKSTRING, Str: key},
+				{Type: resp.BULKSTRING, Str: val},
+			},
+		})
+	}
+
 	return resp.Value{
 		Type: resp.STRING,
 		Str:  "OK",

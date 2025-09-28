@@ -2,10 +2,12 @@ package server
 
 import (
 	"bufio"
+	"io"
 	"log"
 	"net"
 	"strings"
 
+	"github.com/william1nguyen/valkeydb/internal/aof"
 	"github.com/william1nguyen/valkeydb/internal/command"
 	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/store"
@@ -28,7 +30,17 @@ func (s *Server) ListenAndServe() error {
 	defer listener.Close()
 
 	mem := store.NewMemoryStore()
-	command.Init(mem)
+	aofHandler, err := aof.Open("appendonly.aof", true)
+
+	if err != nil {
+		return err
+	}
+
+	command.Init(mem, aofHandler)
+
+	aofHandler.Load("appendonly.aof", func(cmd string, args []resp.Value) {
+		command.Replay(cmd, args)
+	})
 
 	log.Printf("listening on %s", s.addr)
 
@@ -52,6 +64,11 @@ func handleConn(conn net.Conn) {
 	for {
 		req, err := resp.Decode(reader)
 		if err != nil {
+			if err == io.EOF {
+				log.Printf("%s disconnected", conn.RemoteAddr())
+				return
+			}
+
 			log.Printf("%s decode error: %v", conn.RemoteAddr(), err)
 			return
 		}

@@ -7,5 +7,6 @@ type Store interface {
 	Get(key string) (string, bool)
 	Delete(keys ...string) int
 	Expire(key string, ttl time.Duration) bool
+	ExpireAt(key string, at time.Time) bool
 	TTL(key string) int64
 }
