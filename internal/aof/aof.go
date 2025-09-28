@@ -106,6 +106,9 @@ func (a *AOF) Rewrite(dump func() map[string]store.Entry, path string) error {
 		return nil
 	}
 
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	tmpPath := path + ".tmp"
 	f, err := os.Create(tmpPath)
 	if err != nil {
