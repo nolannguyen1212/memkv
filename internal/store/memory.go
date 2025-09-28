@@ -6,22 +6,17 @@ import (
 	"time"
 )
 
-type entry struct {
-	value     string
-	expiredAt time.Time
-}
-
 type MemoryStore struct {
 	mu      sync.RWMutex
 	ttlKeys map[string]struct{}
-	records map[string]entry
+	records map[string]Entry
 	quit    chan struct{}
 }
 
 func NewMemoryStore() *MemoryStore {
 	m := &MemoryStore{
 		ttlKeys: make(map[string]struct{}),
-		records: make(map[string]entry),
+		records: make(map[string]Entry),
 		quit:    make(chan struct{}),
 	}
 	go m.expireLoop()
@@ -36,10 +31,10 @@ func (m *MemoryStore) Set(key, value string, ttl time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	e := entry{value: value}
+	e := Entry{Value: value}
 
 	if ttl > 0 {
-		e.expiredAt = time.Now().Add(ttl)
+		e.ExpiredAt = time.Now().Add(ttl)
 		m.addTTLKey(key)
 	}
 
@@ -55,9 +50,9 @@ func (m *MemoryStore) Get(key string) (string, bool) {
 		return "", false
 	}
 
-	if !e.expiredAt.IsZero() && time.Now().After(e.expiredAt) {
+	if !e.ExpiredAt.IsZero() && time.Now().After(e.ExpiredAt) {
 		m.mu.Lock()
-		if e, ok := m.records[key]; ok && !e.expiredAt.IsZero() && time.Now().After(e.expiredAt) {
+		if e, ok := m.records[key]; ok && !e.ExpiredAt.IsZero() && time.Now().After(e.ExpiredAt) {
 			delete(m.records, key)
 			m.removeTTLKey(key)
 		}
@@ -65,7 +60,7 @@ func (m *MemoryStore) Get(key string) (string, bool) {
 		return "", false
 	}
 
-	return e.value, true
+	return e.Value, true
 }
 
 func (m *MemoryStore) Delete(keys ...string) int {
@@ -97,7 +92,7 @@ func (m *MemoryStore) Expire(key string, ttl time.Duration) bool {
 		return true
 	}
 
-	e.expiredAt = time.Now().Add(ttl)
+	e.ExpiredAt = time.Now().Add(ttl)
 	m.records[key] = e
 
 	return true
@@ -117,7 +112,7 @@ func (m *MemoryStore) ExpireAt(key string, at time.Time) bool {
 		return true
 	}
 
-	e.expiredAt = at
+	e.ExpiredAt = at
 	m.records[key] = e
 
 	return true
@@ -132,14 +127,14 @@ func (m *MemoryStore) TTL(key string) int64 {
 		return -2
 	}
 
-	if e.expiredAt.IsZero() {
+	if e.ExpiredAt.IsZero() {
 		return -1
 	}
 
-	remaining := time.Until(e.expiredAt).Seconds()
+	remaining := time.Until(e.ExpiredAt).Seconds()
 	if remaining < 0 {
 		m.mu.Lock()
-		if e, ok := m.records[key]; ok && !e.expiredAt.IsZero() && time.Until(e.expiredAt).Seconds() < 0 {
+		if e, ok := m.records[key]; ok && !e.ExpiredAt.IsZero() && time.Until(e.ExpiredAt).Seconds() < 0 {
 			delete(m.records, key)
 			m.removeTTLKey(key)
 		}
@@ -203,7 +198,7 @@ func (m *MemoryStore) sampleExpire(batchSize int) {
 			}
 
 			checked++
-			if !e.expiredAt.IsZero() && now.After(e.expiredAt) {
+			if !e.ExpiredAt.IsZero() && now.After(e.ExpiredAt) {
 				delete(m.records, key)
 				m.removeTTLKey(key)
 				expired++
@@ -222,4 +217,21 @@ func (m *MemoryStore) addTTLKey(k string) {
 
 func (m *MemoryStore) removeTTLKey(k string) {
 	delete(m.ttlKeys, k)
+}
+
+func (m *MemoryStore) Dump() map[string]Entry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	snapshot := make(map[string]Entry, len(m.records))
+	now := time.Now()
+
+	for k, e := range m.records {
+		if !e.ExpiredAt.IsZero() && now.After(e.ExpiredAt) {
+			continue
+		}
+		snapshot[k] = e
+	}
+
+	return snapshot
 }

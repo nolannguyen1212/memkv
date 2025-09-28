@@ -3,9 +3,11 @@ package aof
 import (
 	"bufio"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
 type AOF struct {
@@ -97,4 +99,57 @@ func (a *AOF) Close() error {
 	}
 
 	return a.file.Close()
+}
+
+func (a *AOF) Rewrite(dump func() map[string]store.Entry, path string) error {
+	if !a.enabled {
+		return nil
+	}
+
+	tmpPath := path + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	snapshot := dump()
+
+	for key, e := range snapshot {
+		v := resp.Value{
+			Type: resp.ARRAY,
+			Array: []resp.Value{
+				{Type: resp.STRING, Str: "SET"},
+				{Type: resp.BULKSTRING, Str: key},
+				{Type: resp.BULKSTRING, Str: e.Value},
+			},
+		}
+
+		if _, err := f.WriteString(resp.Encode(v)); err != nil {
+			return err
+		}
+
+		if !e.ExpiredAt.IsZero() {
+			at := e.ExpiredAt
+			v := resp.Value{
+				Type: resp.ARRAY,
+				Array: []resp.Value{
+					{Type: resp.STRING, Str: "PEXPIREAT"},
+					{Type: resp.BULKSTRING, Str: key},
+					{Type: resp.BULKSTRING, Str: strconv.FormatInt(at.UnixMilli(), 10)},
+				},
+			}
+
+			if _, err := f.WriteString(resp.Encode(v)); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := f.Sync(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
 }

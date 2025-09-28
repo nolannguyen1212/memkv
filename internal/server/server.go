@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/william1nguyen/valkeydb/internal/aof"
 	"github.com/william1nguyen/valkeydb/internal/command"
@@ -42,6 +43,19 @@ func (s *Server) ListenAndServe() error {
 		command.Replay(cmd, args)
 	})
 
+	go func() {
+		for {
+			time.Sleep(60 * time.Second)
+			if err := aofHandler.Rewrite(func() map[string]store.Entry {
+				return mem.Dump()
+			}, "appendonly.aof"); err != nil {
+				log.Printf("aof rewrite error: %v", err)
+			} else {
+				log.Printf("aof rewrite done")
+			}
+		}
+	}()
+
 	log.Printf("listening on %s", s.addr)
 
 	for {
@@ -51,69 +65,68 @@ func (s *Server) ListenAndServe() error {
 			continue
 		}
 
-		go handleConn(conn)
+		go s.handleConn(conn)
 	}
 }
 
-func handleConn(conn net.Conn) {
+func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
-
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 
 	for {
-		req, err := resp.Decode(reader)
+		req, err := s.readRequest(reader, conn)
 		if err != nil {
-			if err == io.EOF {
-				log.Printf("%s disconnected", conn.RemoteAddr())
-				return
-			}
-
-			log.Printf("%s decode error: %v", conn.RemoteAddr(), err)
 			return
 		}
 
-		if req.Type != resp.ARRAY || len(req.Array) == 0 {
-			v := resp.Value{Type: resp.ERROR, Str: "ERR protocol error"}
-			if _, werr := writer.WriteString(resp.Encode(v)); werr != nil {
-				log.Printf("%s write error: %v", conn.RemoteAddr(), werr)
-				return
-			}
-			if ferr := writer.Flush(); ferr != nil {
-				log.Printf("%s flush error: %v", conn.RemoteAddr(), ferr)
-				return
-			}
-			continue
-		}
-
-		cmd := strings.ToUpper(req.Array[0].Str)
-		handler, ok := command.Lookup(cmd)
-
-		if !ok {
-			v := resp.Value{
-				Type: resp.ERROR,
-				Str:  "ERR unknown command",
-			}
-			if _, werr := writer.WriteString(resp.Encode(v)); werr != nil {
-				log.Printf("%s write error: %v", conn.RemoteAddr(), werr)
-				return
-			}
-			if ferr := writer.Flush(); ferr != nil {
-				log.Printf("%s flush error: %v", conn.RemoteAddr(), ferr)
-				return
-			}
-			continue
-		}
-
-		args := req.Array[1:]
-		result := handler(args)
-		if _, werr := writer.WriteString(resp.Encode(result)); werr != nil {
-			log.Printf("%s write error: %v", conn.RemoteAddr(), werr)
-			return
-		}
-		if ferr := writer.Flush(); ferr != nil {
-			log.Printf("%s flush error: %v", conn.RemoteAddr(), ferr)
+		respVal := s.dispatchCommand(req)
+		if err := s.writeResponse(writer, conn, respVal); err != nil {
 			return
 		}
 	}
+}
+
+func (s *Server) readRequest(r *bufio.Reader, conn net.Conn) (resp.Value, error) {
+	req, err := resp.Decode(r)
+	if err != nil {
+		if err == io.EOF {
+			log.Printf("%s disconnected", conn.RemoteAddr())
+		} else {
+			log.Printf("%s decode error: %v", conn.RemoteAddr(), err)
+		}
+		return resp.Value{}, err
+	}
+
+	return req, nil
+}
+
+func (s *Server) dispatchCommand(req resp.Value) resp.Value {
+	if req.Type != resp.ARRAY || len(req.Array) == 0 {
+		return resp.Value{
+			Type: resp.ERROR,
+			Str:  "ERR protocol error",
+		}
+	}
+
+	cmd := strings.ToUpper(req.Array[0].Str)
+	handler, ok := command.Lookup(cmd)
+	if !ok {
+		return resp.Value{Type: resp.ERROR, Str: "ERR unknown command"}
+	}
+
+	args := req.Array[1:]
+	return handler(args)
+}
+
+func (s *Server) writeResponse(w *bufio.Writer, conn net.Conn, v resp.Value) error {
+	if _, err := w.WriteString(resp.Encode(v)); err != nil {
+		log.Printf("%s write error: %v", conn.RemoteAddr(), err)
+		return err
+	}
+	if err := w.Flush(); err != nil {
+		log.Printf("%s flush error: %v", conn.RemoteAddr(), err)
+		return err
+	}
+	return nil
 }
