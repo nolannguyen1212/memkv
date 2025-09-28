@@ -2,10 +2,12 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/william1nguyen/valkeydb/internal/aof"
@@ -15,7 +17,12 @@ import (
 )
 
 type Server struct {
-	addr string
+	addr     string
+	listener net.Listener
+	mem      *store.MemoryStore
+	aof      *aof.AOF
+	stopCh   chan struct{}
+	wg       sync.WaitGroup
 }
 
 func New(addr string) *Server {
@@ -28,7 +35,8 @@ func (s *Server) ListenAndServe() error {
 		return err
 	}
 
-	defer listener.Close()
+	s.listener = listener
+	s.stopCh = make(chan struct{})
 
 	mem := store.NewMemoryStore()
 	aofHandler, err := aof.Open("appendonly.aof", true)
@@ -43,15 +51,25 @@ func (s *Server) ListenAndServe() error {
 		command.Replay(cmd, args)
 	})
 
+	s.mem = mem
+	s.aof = aofHandler
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
 		for {
-			time.Sleep(60 * time.Second)
-			if err := aofHandler.Rewrite(func() map[string]store.Entry {
-				return mem.Dump()
-			}, "appendonly.aof"); err != nil {
-				log.Printf("aof rewrite error: %v", err)
-			} else {
-				log.Printf("aof rewrite done")
+			select {
+			case <-ticker.C:
+				if err := aofHandler.Rewrite(func() map[string]store.Entry {
+					return mem.Dump()
+				}, "appendonly.aof"); err != nil {
+					log.Printf("aof rewrite error: %v", err)
+				} else {
+					log.Printf("aof rewrite done")
+				}
+			case <-s.stopCh:
+				return
 			}
 		}
 	}()
@@ -61,12 +79,46 @@ func (s *Server) ListenAndServe() error {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			select {
+			case <-s.stopCh:
+				return nil
+			default:
+			}
 			log.Printf("accept error: %v", err)
 			continue
 		}
 
-		go s.handleConn(conn)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.handleConn(conn)
+		}()
 	}
+}
+
+func (s *Server) Close(ctx context.Context) error {
+	if s.listener != nil {
+		_ = s.listener.Close()
+	}
+	if s.stopCh != nil {
+		close(s.stopCh)
+	}
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+	if s.aof != nil {
+		_ = s.aof.Close()
+	}
+	if s.mem != nil {
+		s.mem.Close()
+	}
+	return nil
 }
 
 func (s *Server) handleConn(conn net.Conn) {
@@ -75,12 +127,14 @@ func (s *Server) handleConn(conn net.Conn) {
 	writer := bufio.NewWriter(conn)
 
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		req, err := s.readRequest(reader, conn)
 		if err != nil {
 			return
 		}
 
 		respVal := s.dispatchCommand(req)
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Minute))
 		if err := s.writeResponse(writer, conn, respVal); err != nil {
 			return
 		}
