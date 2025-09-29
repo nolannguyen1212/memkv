@@ -3,30 +3,27 @@ package command
 import (
 	"strings"
 
-	"github.com/william1nguyen/valkeydb/internal/aof"
-	"github.com/william1nguyen/valkeydb/internal/resp"
-	"github.com/william1nguyen/valkeydb/internal/store"
+	"github.com/william1nguyen/valkeydb/internal/datastructure"
+	"github.com/william1nguyen/valkeydb/internal/persistence"
+	"github.com/william1nguyen/valkeydb/internal/protocol/resp"
 )
 
 type Handler func(args []resp.Value) resp.Value
 
+type DB struct {
+	Dict *datastructure.Dict
+	AOF  *persistence.AOF
+}
+
 var (
-	registry   = map[string]Handler{}
-	db         store.Store
-	aofHandler *aof.AOF
+	registry = map[string]Handler{}
 )
 
-func Init(s store.Store, h *aof.AOF) {
-	db = s
-	Register("SET", set)
-	Register("GET", get)
-	Register("DEL", del)
-	Register("EXPIRE", expire)
-	Register("TTL", ttl)
-	Register("PING", ping)
-	Register("PEXPIREAT", pexpireat)
+func Init(db *DB) {
+	registry = map[string]Handler{}
 
-	aofHandler = h
+	SetDictContext(&DictContext{Dict: db.Dict, AOF: db.AOF})
+	InitDictCommands()
 }
 
 func Register(name string, h Handler) {

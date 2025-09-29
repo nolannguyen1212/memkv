@@ -1,4 +1,4 @@
-package aof
+package persistence
 
 import (
 	"bufio"
@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
-	"github.com/william1nguyen/valkeydb/internal/store"
+	"github.com/william1nguyen/valkeydb/internal/datastructure"
+	"github.com/william1nguyen/valkeydb/internal/protocol/resp"
 )
 
 type AOF struct {
@@ -76,17 +76,17 @@ func (a *AOF) Load(path string, dispatch func(cmd string, args []resp.Value)) er
 			break
 		}
 
-		if val.Type != resp.ARRAY || len(val.Array) == 0 {
+		if val.Type != resp.Array || len(val.Items) == 0 {
 			continue
 		}
 
-		cmdVal := val.Array[0]
-		if cmdVal.Type != resp.STRING {
+		cmdVal := val.Items[0]
+		if cmdVal.Type != resp.BulkString && cmdVal.Type != resp.SimpleString {
 			continue
 		}
 
-		cmd := cmdVal.Str
-		args := val.Array[1:]
+		cmd := cmdVal.Text
+		args := val.Items[1:]
 		dispatch(cmd, args)
 	}
 
@@ -101,7 +101,7 @@ func (a *AOF) Close() error {
 	return a.file.Close()
 }
 
-func (a *AOF) Rewrite(dump func() map[string]store.Entry, path string) error {
+func (a *AOF) Rewrite(dump func() map[string]datastructure.Item, path string) error {
 	if !a.enabled {
 		return nil
 	}
@@ -121,11 +121,11 @@ func (a *AOF) Rewrite(dump func() map[string]store.Entry, path string) error {
 
 	for key, e := range snapshot {
 		v := resp.Value{
-			Type: resp.ARRAY,
-			Array: []resp.Value{
-				{Type: resp.STRING, Str: "SET"},
-				{Type: resp.BULKSTRING, Str: key},
-				{Type: resp.BULKSTRING, Str: e.Value},
+			Type: resp.Array,
+			Items: []resp.Value{
+				{Type: resp.BulkString, Text: "SET"},
+				{Type: resp.BulkString, Text: key},
+				{Type: resp.BulkString, Text: e.Value},
 			},
 		}
 
@@ -136,11 +136,11 @@ func (a *AOF) Rewrite(dump func() map[string]store.Entry, path string) error {
 		if !e.ExpiredAt.IsZero() {
 			at := e.ExpiredAt
 			v := resp.Value{
-				Type: resp.ARRAY,
-				Array: []resp.Value{
-					{Type: resp.STRING, Str: "PEXPIREAT"},
-					{Type: resp.BULKSTRING, Str: key},
-					{Type: resp.BULKSTRING, Str: strconv.FormatInt(at.UnixMilli(), 10)},
+				Type: resp.Array,
+				Items: []resp.Value{
+					{Type: resp.BulkString, Text: "PEXPIREAT"},
+					{Type: resp.BulkString, Text: key},
+					{Type: resp.BulkString, Text: strconv.FormatInt(at.UnixMilli(), 10)},
 				},
 			}
 

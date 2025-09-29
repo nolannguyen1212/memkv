@@ -10,17 +10,21 @@ import (
 	"sync"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/aof"
 	"github.com/william1nguyen/valkeydb/internal/command"
-	"github.com/william1nguyen/valkeydb/internal/resp"
-	"github.com/william1nguyen/valkeydb/internal/store"
+	"github.com/william1nguyen/valkeydb/internal/datastructure"
+	"github.com/william1nguyen/valkeydb/internal/persistence"
+	"github.com/william1nguyen/valkeydb/internal/protocol/resp"
+)
+
+const (
+	aofFile = "appendonly.aof"
 )
 
 type Server struct {
 	addr     string
 	listener net.Listener
-	mem      *store.MemoryStore
-	aof      *aof.AOF
+	dict     *datastructure.Dict
+	aof      *persistence.AOF
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
 }
@@ -38,21 +42,19 @@ func (s *Server) ListenAndServe() error {
 	s.listener = listener
 	s.stopCh = make(chan struct{})
 
-	mem := store.NewMemoryStore()
-	aofHandler, err := aof.Open("appendonly.aof", true)
+	s.dict = datastructure.CreateDict()
+	s.aof, err = persistence.Open(aofFile, true)
 
 	if err != nil {
 		return err
 	}
 
-	command.Init(mem, aofHandler)
+	command.Init(&command.DB{Dict: s.dict, AOF: s.aof})
 
-	aofHandler.Load("appendonly.aof", func(cmd string, args []resp.Value) {
+	s.aof.Load(aofFile, func(cmd string, args []resp.Value) {
 		command.Replay(cmd, args)
 	})
 
-	s.mem = mem
-	s.aof = aofHandler
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -61,9 +63,9 @@ func (s *Server) ListenAndServe() error {
 		for {
 			select {
 			case <-ticker.C:
-				if err := aofHandler.Rewrite(func() map[string]store.Entry {
-					return mem.Dump()
-				}, "appendonly.aof"); err != nil {
+				if err := s.aof.Rewrite(func() map[string]datastructure.Item {
+					return s.dict.Dump()
+				}, aofFile); err != nil {
 					log.Printf("aof rewrite error: %v", err)
 				} else {
 					log.Printf("aof rewrite done")
@@ -115,9 +117,6 @@ func (s *Server) Close(ctx context.Context) error {
 	if s.aof != nil {
 		_ = s.aof.Close()
 	}
-	if s.mem != nil {
-		s.mem.Close()
-	}
 	return nil
 }
 
@@ -151,25 +150,21 @@ func (s *Server) readRequest(r *bufio.Reader, conn net.Conn) (resp.Value, error)
 		}
 		return resp.Value{}, err
 	}
-
 	return req, nil
 }
 
 func (s *Server) dispatchCommand(req resp.Value) resp.Value {
-	if req.Type != resp.ARRAY || len(req.Array) == 0 {
-		return resp.Value{
-			Type: resp.ERROR,
-			Str:  "ERR protocol error",
-		}
+	if req.Type != resp.Array || len(req.Items) == 0 {
+		return resp.Value{Type: resp.Error, Text: "ERR protocol error"}
 	}
 
-	cmd := strings.ToUpper(req.Array[0].Str)
+	cmd := strings.ToUpper(req.Items[0].Text)
 	handler, ok := command.Lookup(cmd)
 	if !ok {
-		return resp.Value{Type: resp.ERROR, Str: "ERR unknown command"}
+		return resp.Value{Type: resp.Error, Text: "ERR unknown command"}
 	}
 
-	args := req.Array[1:]
+	args := req.Items[1:]
 	return handler(args)
 }
 
