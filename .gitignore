@@ -33,6 +33,12 @@ go.work.sum
 
 # AOF
 appendonly.aof
+test_*.aof
 
 # RDB
 dump.rdb
+test_*.rdb
+
+# Test coverage
+coverage.out
+*.test
