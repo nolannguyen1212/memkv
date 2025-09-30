@@ -11,10 +11,11 @@ import (
 type Handler func(args []resp.Value) resp.Value
 
 type DB struct {
-	Dict *datastructure.Dict
-	Set  *datastructure.Set
-	AOF  *persistence.AOF
-	RDB  *persistence.RDB
+	Dict   *datastructure.Dict
+	Set    *datastructure.Set
+	AOF    *persistence.AOF
+	RDB    *persistence.RDB
+	Pubsub *datastructure.Pubsub
 }
 
 var (
@@ -32,6 +33,9 @@ func Init(db *DB) {
 
 	SetSystemContext(&SystemContext{DB: db})
 	InitSystemCommands()
+
+	SetPubsubContext(&PubsubContext{Pubsub: db.Pubsub})
+	InitPubsubCommands()
 }
 
 func Register(name string, h Handler) {

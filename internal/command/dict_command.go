@@ -24,9 +24,9 @@ type DictContext struct {
 	AOF  *persistence.AOF
 }
 
-var ctx *DictContext
+var dictCtx *DictContext
 
-func SetDictContext(c *DictContext) { ctx = c }
+func SetDictContext(c *DictContext) { dictCtx = c }
 
 func InitDictCommands() {
 	Register("SET", cmdSet)
@@ -50,9 +50,9 @@ func cmdSet(args []resp.Value) resp.Value {
 			ttl = time.Duration(seconds) * time.Second
 		}
 	}
-	ctx.Dict.Set(key, val, ttl)
-	if ctx.AOF != nil {
-		_ = ctx.AOF.Append(resp.Value{
+	dictCtx.Dict.Set(key, val, ttl)
+	if dictCtx.AOF != nil {
+		_ = dictCtx.AOF.Append(resp.Value{
 			Type: resp.Array,
 			Items: []resp.Value{
 				{Type: resp.BulkString, Text: "SET"},
@@ -62,7 +62,7 @@ func cmdSet(args []resp.Value) resp.Value {
 		})
 		if ttl > 0 {
 			at := time.Now().Add(ttl)
-			_ = ctx.AOF.Append(resp.Value{
+			_ = dictCtx.AOF.Append(resp.Value{
 				Type: resp.Array,
 				Items: []resp.Value{
 					{Type: resp.BulkString, Text: "PEXPIREAT"},
@@ -80,7 +80,7 @@ func cmdGet(args []resp.Value) resp.Value {
 		return resp.Value{Type: resp.Error, Text: "ERR wrong number of arguments for 'get'"}
 	}
 	key := args[0].Text
-	val, ok := ctx.Dict.Get(key)
+	val, ok := dictCtx.Dict.Get(key)
 	if !ok {
 		return resp.Value{Type: resp.BulkString, IsNil: true}
 	}
@@ -95,13 +95,13 @@ func cmdDel(args []resp.Value) resp.Value {
 	for i, a := range args {
 		keys[i] = a.Text
 	}
-	n := ctx.Dict.Delete(keys...)
-	if ctx.AOF != nil {
+	n := dictCtx.Dict.Delete(keys...)
+	if dictCtx.AOF != nil {
 		arr := []resp.Value{{Type: resp.BulkString, Text: "DEL"}}
 		for _, k := range keys {
 			arr = append(arr, resp.Value{Type: resp.BulkString, Text: k})
 		}
-		_ = ctx.AOF.Append(resp.Value{Type: resp.Array, Items: arr})
+		_ = dictCtx.AOF.Append(resp.Value{Type: resp.Array, Items: arr})
 	}
 	return resp.Value{Type: resp.Integer, Number: int64(n)}
 }
@@ -115,13 +115,13 @@ func cmdExpire(args []resp.Value) resp.Value {
 	if err != nil {
 		return resp.Value{Type: resp.Error, Text: "ERR value is not an integer or out of range"}
 	}
-	ok := ctx.Dict.Expire(key, time.Duration(seconds)*time.Second)
+	ok := dictCtx.Dict.Expire(key, time.Duration(seconds)*time.Second)
 	at := time.Now().Add(time.Duration(seconds) * time.Second)
 	if !ok {
 		return resp.Value{Type: resp.Integer, Number: 0}
 	}
-	if ctx.AOF != nil {
-		_ = ctx.AOF.Append(resp.Value{
+	if dictCtx.AOF != nil {
+		_ = dictCtx.AOF.Append(resp.Value{
 			Type: resp.Array,
 			Items: []resp.Value{
 				{Type: resp.BulkString, Text: "PEXPIREAT"},
@@ -143,7 +143,7 @@ func cmdPExpireAt(args []resp.Value) resp.Value {
 		return resp.Value{Type: resp.Error, Text: "ERR invalid expire time"}
 	}
 	at := time.UnixMilli(ms)
-	ok := ctx.Dict.ExpireAt(key, at)
+	ok := dictCtx.Dict.ExpireAt(key, at)
 	if !ok {
 		return resp.Value{Type: resp.Integer, Number: 0}
 	}
@@ -155,7 +155,7 @@ func cmdTTL(args []resp.Value) resp.Value {
 		return resp.Value{Type: resp.Error, Text: "ERR wrong number of arguments for 'ttl'"}
 	}
 	key := args[0].Text
-	remaining := ctx.Dict.TTL(key)
+	remaining := dictCtx.Dict.TTL(key)
 	return resp.Value{Type: resp.Integer, Number: remaining}
 }
 

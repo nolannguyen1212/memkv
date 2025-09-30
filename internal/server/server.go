@@ -22,6 +22,7 @@ type Server struct {
 	listener net.Listener
 	dict     *datastructure.Dict
 	set      *datastructure.Set
+	pubsub   *datastructure.Pubsub
 	aof      *persistence.AOF
 	rdb      *persistence.RDB
 	stopCh   chan struct{}
@@ -53,6 +54,7 @@ func (s *Server) initialize() error {
 
 	s.dict = datastructure.CreateDict()
 	s.set = datastructure.CreateSet()
+	s.pubsub = datastructure.CreatePubsub()
 
 	aofFile := config.Global.Persistence.AOF.Filename
 	rdbFile := config.Global.Persistence.RDB.Filename
@@ -64,7 +66,7 @@ func (s *Server) initialize() error {
 		return err
 	}
 
-	command.Init(&command.DB{Dict: s.dict, Set: s.set, AOF: s.aof, RDB: s.rdb})
+	command.Init(&command.DB{Dict: s.dict, Set: s.set, Pubsub: s.pubsub, AOF: s.aof, RDB: s.rdb})
 
 	s.loadRDB()
 	s.loadAOF()
@@ -207,6 +209,28 @@ func (s *Server) handleConn(conn net.Conn) {
 		respVal := s.dispatchCommand(req)
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.GetWriteTimeout()))
 		if err := s.writeResponse(writer, conn, respVal); err != nil {
+			return
+		}
+
+		if req.Type == resp.Array && len(req.Items) > 0 {
+			cmd := strings.ToUpper(req.Items[0].Text)
+			if cmd == "SUBSCRIBE" {
+				s.pubsubMode(conn, writer)
+				return
+			}
+		}
+	}
+}
+
+func (s *Server) pubsubMode(conn net.Conn, writer *bufio.Writer) {
+	msgChan := command.GetSubChannel()
+	if msgChan == nil {
+		return
+	}
+
+	for msg := range msgChan {
+		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.GetWriteTimeout()))
+		if err := s.writeResponse(writer, conn, msg); err != nil {
 			return
 		}
 	}
