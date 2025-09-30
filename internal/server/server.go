@@ -11,14 +11,10 @@ import (
 	"time"
 
 	"github.com/william1nguyen/valkeydb/internal/command"
+	"github.com/william1nguyen/valkeydb/internal/config"
 	"github.com/william1nguyen/valkeydb/internal/datastructure"
 	"github.com/william1nguyen/valkeydb/internal/persistence"
 	"github.com/william1nguyen/valkeydb/internal/protocol/resp"
-)
-
-const (
-	aofFile = "appendonly.aof"
-	rdbFile = "dump.rdb"
 )
 
 type Server struct {
@@ -58,10 +54,13 @@ func (s *Server) initialize() error {
 	s.dict = datastructure.CreateDict()
 	s.set = datastructure.CreateSet()
 
-	if s.aof, err = persistence.OpenAOF(aofFile, true); err != nil {
+	aofFile := config.Global.Persistence.AOF.Filename
+	rdbFile := config.Global.Persistence.RDB.Filename
+
+	if s.aof, err = persistence.OpenAOF(aofFile, config.Global.Persistence.AOF.Enabled); err != nil {
 		return err
 	}
-	if s.rdb, err = persistence.OpenRDB(rdbFile, true); err != nil {
+	if s.rdb, err = persistence.OpenRDB(rdbFile, config.Global.Persistence.RDB.Enabled); err != nil {
 		return err
 	}
 
@@ -74,6 +73,7 @@ func (s *Server) initialize() error {
 }
 
 func (s *Server) loadRDB() {
+	rdbFile := config.Global.Persistence.RDB.Filename
 	snapshot, err := s.rdb.Load(rdbFile)
 	if err != nil {
 		log.Printf("RDB load error: %v", err)
@@ -107,6 +107,7 @@ func (s *Server) loadRDB() {
 }
 
 func (s *Server) loadAOF() {
+	aofFile := config.Global.Persistence.AOF.Filename
 	s.aof.Load(aofFile, func(cmd string, args []resp.Value) {
 		command.Replay(cmd, args)
 	})
@@ -116,7 +117,7 @@ func (s *Server) startBackgroundTasks() {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		ticker := time.NewTicker(60 * time.Second)
+		ticker := time.NewTicker(config.Global.GetAOFRewriteInterval())
 		defer ticker.Stop()
 		for {
 			select {
@@ -138,6 +139,7 @@ func (s *Server) rewriteAOF() {
 		combined[k] = v
 	}
 
+	aofFile := config.Global.Persistence.AOF.Filename
 	if err := s.aof.Rewrite(func() map[string]datastructure.Item {
 		return combined
 	}, aofFile); err != nil {
@@ -196,14 +198,14 @@ func (s *Server) handleConn(conn net.Conn) {
 	writer := bufio.NewWriter(conn)
 
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		_ = conn.SetReadDeadline(time.Now().Add(config.Global.GetReadTimeout()))
 		req, err := s.readRequest(reader, conn)
 		if err != nil {
 			return
 		}
 
 		respVal := s.dispatchCommand(req)
-		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Minute))
+		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.GetWriteTimeout()))
 		if err := s.writeResponse(writer, conn, respVal); err != nil {
 			return
 		}

@@ -183,7 +183,7 @@ func (s *Set) Dump() map[string]Item {
 }
 
 func (s *Set) expireLoop() {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(GetExpirationCheckInterval())
 	defer ticker.Stop()
 	for range ticker.C {
 		s.activeExpire()
@@ -196,7 +196,7 @@ func (s *Set) activeExpire() {
 	if len(s.items) == 0 {
 		return
 	}
-	for range maxSampleRounds {
+	for range GetMaxSampleRounds() {
 		checked, expired := 0, 0
 		keys := make([]string, 0, len(s.items))
 		for k := range s.items {
@@ -205,7 +205,7 @@ func (s *Set) activeExpire() {
 		if len(keys) == 0 {
 			return
 		}
-		limit := maxSampleSize
+		limit := GetMaxSampleSize()
 		if len(keys) < limit {
 			limit = len(keys)
 		}

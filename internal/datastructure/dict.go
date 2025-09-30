@@ -132,7 +132,7 @@ func (d *Dict) TTL(key string) int64 {
 }
 
 func (d *Dict) expireLoop() {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(GetExpirationCheckInterval())
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -148,7 +148,7 @@ func (d *Dict) activeExpire() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	for i := 0; i < maxSampleRounds; i++ {
+	for i := 0; i < GetMaxSampleRounds(); i++ {
 		checked := 0
 		expired := 0
 
@@ -157,7 +157,7 @@ func (d *Dict) activeExpire() {
 			keys = append(keys, key)
 		}
 
-		limit := maxSampleSize
+		limit := GetMaxSampleSize()
 		if len(keys) < limit {
 			limit = len(keys)
 		}

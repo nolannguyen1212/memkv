@@ -1,0 +1,43 @@
+# ValkeyDB Configuration File
+# All paths are relative to the working directory
+
+server:
+  # Server listen address
+  addr: ":6379"
+  
+  # Connection timeouts (in seconds)
+  read_timeout: 300   # 5 minutes
+  write_timeout: 300  # 5 minutes
+
+persistence:
+  # Append-Only File (AOF) settings
+  aof:
+    enabled: true
+    filename: "appendonly.aof"
+    # AOF rewrite interval (in seconds)
+    rewrite_interval: 60
+  
+  # Redis Database (RDB) snapshot settings
+  rdb:
+    enabled: true
+    filename: "dump.rdb"
+
+datastructure:
+  # Active expiration sampling settings
+  # Used by Dict and Set to periodically remove expired keys
+  expiration:
+    # Number of keys to sample per round
+    max_sample_size: 20
+    
+    # Maximum number of sampling rounds per cycle
+    max_sample_rounds: 3
+    
+    # Expiration check interval (in seconds)
+    check_interval: 1
+
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+  
+  # Enable verbose logging for persistence operations
+  verbose_persistence: true
