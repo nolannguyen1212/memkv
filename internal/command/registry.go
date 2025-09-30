@@ -14,6 +14,7 @@ type DB struct {
 	Dict *datastructure.Dict
 	Set  *datastructure.Set
 	AOF  *persistence.AOF
+	RDB  *persistence.RDB
 }
 
 var (
@@ -28,6 +29,9 @@ func Init(db *DB) {
 
 	SetSetContext(&SetContext{Set: db.Set, AOF: db.AOF})
 	InitSetCommands()
+
+	SetSystemContext(&SystemContext{DB: db})
+	InitSystemCommands()
 }
 
 func Register(name string, h Handler) {

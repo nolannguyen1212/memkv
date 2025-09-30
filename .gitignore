@@ -33,3 +33,6 @@ go.work.sum
 
 # AOF
 appendonly.aof
+
+# RDB
+dump.rdb

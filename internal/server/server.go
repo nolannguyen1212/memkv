@@ -18,6 +18,7 @@ import (
 
 const (
 	aofFile = "appendonly.aof"
+	rdbFile = "dump.rdb"
 )
 
 type Server struct {
@@ -26,6 +27,7 @@ type Server struct {
 	dict     *datastructure.Dict
 	set      *datastructure.Set
 	aof      *persistence.AOF
+	rdb      *persistence.RDB
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
 }
@@ -35,27 +37,82 @@ func New(addr string) *Server {
 }
 
 func (s *Server) ListenAndServe() error {
+	if err := s.initialize(); err != nil {
+		return err
+	}
+
+	s.startBackgroundTasks()
+	log.Printf("listening on %s", s.addr)
+
+	return s.acceptLoop()
+}
+
+func (s *Server) initialize() error {
 	listener, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return err
 	}
-
 	s.listener = listener
 	s.stopCh = make(chan struct{})
 
 	s.dict = datastructure.CreateDict()
 	s.set = datastructure.CreateSet()
-	s.aof, err = persistence.Open(aofFile, true)
 
-	if err != nil {
+	if s.aof, err = persistence.OpenAOF(aofFile, true); err != nil {
+		return err
+	}
+	if s.rdb, err = persistence.OpenRDB(rdbFile, true); err != nil {
 		return err
 	}
 
-	command.Init(&command.DB{Dict: s.dict, Set: s.set, AOF: s.aof})
+	command.Init(&command.DB{Dict: s.dict, Set: s.set, AOF: s.aof, RDB: s.rdb})
 
+	s.loadRDB()
+	s.loadAOF()
+
+	return nil
+}
+
+func (s *Server) loadRDB() {
+	snapshot, err := s.rdb.Load(rdbFile)
+	if err != nil {
+		log.Printf("RDB load error: %v", err)
+		return
+	}
+	if snapshot == nil {
+		return
+	}
+
+	for key, item := range snapshot.DictData {
+		s.dict.Set(key, item.Value, 0)
+		if !item.ExpiredAt.IsZero() {
+			s.dict.ExpireAt(key, item.ExpiredAt)
+		}
+	}
+
+	for key, item := range snapshot.SetData {
+		if len(item.Members) > 0 {
+			members := make([]string, 0, len(item.Members))
+			for m := range item.Members {
+				members = append(members, m)
+			}
+			s.set.Sadd(key, members...)
+			if !item.ExpiredAt.IsZero() {
+				s.set.ExpireAt(key, item.ExpiredAt)
+			}
+		}
+	}
+
+	log.Printf("RDB loaded: %d dict keys, %d set keys", len(snapshot.DictData), len(snapshot.SetData))
+}
+
+func (s *Server) loadAOF() {
 	s.aof.Load(aofFile, func(cmd string, args []resp.Value) {
 		command.Replay(cmd, args)
 	})
+}
+
+func (s *Server) startBackgroundTasks() {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -64,31 +121,35 @@ func (s *Server) ListenAndServe() error {
 		for {
 			select {
 			case <-ticker.C:
-				if err := s.aof.Rewrite(func() map[string]datastructure.Item {
-					return s.dict.Dump()
-				}, aofFile); err != nil {
-					log.Printf("aof rewrite error: %v", err)
-				} else {
-					log.Printf("aof rewrite done")
-				}
-
-				if err := s.aof.Rewrite(func() map[string]datastructure.Item {
-					return s.set.Dump()
-				}, aofFile); err != nil {
-					log.Printf("aof rewrite error: %v", err)
-				} else {
-					log.Printf("aof rewrite done")
-				}
+				s.rewriteAOF()
 			case <-s.stopCh:
 				return
 			}
 		}
 	}()
+}
 
-	log.Printf("listening on %s", s.addr)
+func (s *Server) rewriteAOF() {
+	combined := make(map[string]datastructure.Item)
+	for k, v := range s.dict.Dump() {
+		combined[k] = v
+	}
+	for k, v := range s.set.Dump() {
+		combined[k] = v
+	}
 
+	if err := s.aof.Rewrite(func() map[string]datastructure.Item {
+		return combined
+	}, aofFile); err != nil {
+		log.Printf("aof rewrite error: %v", err)
+	} else {
+		log.Printf("aof rewrite done")
+	}
+}
+
+func (s *Server) acceptLoop() error {
 	for {
-		conn, err := listener.Accept()
+		conn, err := s.listener.Accept()
 		if err != nil {
 			select {
 			case <-s.stopCh:

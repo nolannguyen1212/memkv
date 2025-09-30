@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/william1nguyen/valkeydb/internal/datastructure"
 	"github.com/william1nguyen/valkeydb/internal/persistence"
 	"github.com/william1nguyen/valkeydb/internal/protocol/resp"
 )
@@ -15,6 +16,7 @@ type DictStore interface {
 	Expire(key string, ttl time.Duration) bool
 	ExpireAt(key string, at time.Time) bool
 	TTL(key string) int64
+	Dump() map[string]datastructure.Item
 }
 
 type DictContext struct {

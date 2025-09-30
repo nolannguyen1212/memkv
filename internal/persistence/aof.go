@@ -17,10 +17,10 @@ type AOF struct {
 	replaying bool
 }
 
-func Open(path string, enabled bool) (*AOF, error) {
+func OpenAOF(path string, enabled bool) (*AOF, error) {
 	if !enabled {
 		return &AOF{
-			enabled: enabled,
+			enabled: false,
 		}, nil
 	}
 
