@@ -12,6 +12,7 @@ type Handler func(args []resp.Value) resp.Value
 
 type DB struct {
 	Dict *datastructure.Dict
+	Set  *datastructure.Set
 	AOF  *persistence.AOF
 }
 
@@ -24,6 +25,9 @@ func Init(db *DB) {
 
 	SetDictContext(&DictContext{Dict: db.Dict, AOF: db.AOF})
 	InitDictCommands()
+
+	SetSetContext(&SetContext{Set: db.Set, AOF: db.AOF})
+	InitSetCommands()
 }
 
 func Register(name string, h Handler) {

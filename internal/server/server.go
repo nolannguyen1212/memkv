@@ -24,6 +24,7 @@ type Server struct {
 	addr     string
 	listener net.Listener
 	dict     *datastructure.Dict
+	set      *datastructure.Set
 	aof      *persistence.AOF
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
@@ -43,18 +44,18 @@ func (s *Server) ListenAndServe() error {
 	s.stopCh = make(chan struct{})
 
 	s.dict = datastructure.CreateDict()
+	s.set = datastructure.CreateSet()
 	s.aof, err = persistence.Open(aofFile, true)
 
 	if err != nil {
 		return err
 	}
 
-	command.Init(&command.DB{Dict: s.dict, AOF: s.aof})
+	command.Init(&command.DB{Dict: s.dict, Set: s.set, AOF: s.aof})
 
 	s.aof.Load(aofFile, func(cmd string, args []resp.Value) {
 		command.Replay(cmd, args)
 	})
-
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -65,6 +66,14 @@ func (s *Server) ListenAndServe() error {
 			case <-ticker.C:
 				if err := s.aof.Rewrite(func() map[string]datastructure.Item {
 					return s.dict.Dump()
+				}, aofFile); err != nil {
+					log.Printf("aof rewrite error: %v", err)
+				} else {
+					log.Printf("aof rewrite done")
+				}
+
+				if err := s.aof.Rewrite(func() map[string]datastructure.Item {
+					return s.set.Dump()
 				}, aofFile); err != nil {
 					log.Printf("aof rewrite error: %v", err)
 				} else {

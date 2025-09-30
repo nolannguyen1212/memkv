@@ -6,11 +6,6 @@ import (
 	"time"
 )
 
-const (
-	maxSampleSize   = 20
-	maxSampleRounds = 3
-)
-
 type Dict struct {
 	mu    sync.RWMutex
 	items map[string]Item

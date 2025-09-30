@@ -119,22 +119,34 @@ func (a *AOF) Rewrite(dump func() map[string]datastructure.Item, path string) er
 
 	snapshot := dump()
 
-	for key, e := range snapshot {
-		v := resp.Value{
-			Type: resp.Array,
-			Items: []resp.Value{
-				{Type: resp.BulkString, Text: "SET"},
-				{Type: resp.BulkString, Text: key},
-				{Type: resp.BulkString, Text: e.Value},
-			},
+	for key, item := range snapshot {
+		if len(item.Members) > 0 {
+			items := make([]resp.Value, 0, 2+len(item.Members))
+			items = append(items, resp.Value{Type: resp.BulkString, Text: "SADD"})
+			items = append(items, resp.Value{Type: resp.BulkString, Text: key})
+			for member := range item.Members {
+				items = append(items, resp.Value{Type: resp.BulkString, Text: member})
+			}
+			v := resp.Value{Type: resp.Array, Items: items}
+			if _, err := f.WriteString(resp.Encode(v)); err != nil {
+				return err
+			}
+		} else {
+			v := resp.Value{
+				Type: resp.Array,
+				Items: []resp.Value{
+					{Type: resp.BulkString, Text: "SET"},
+					{Type: resp.BulkString, Text: key},
+					{Type: resp.BulkString, Text: item.Value},
+				},
+			}
+			if _, err := f.WriteString(resp.Encode(v)); err != nil {
+				return err
+			}
 		}
 
-		if _, err := f.WriteString(resp.Encode(v)); err != nil {
-			return err
-		}
-
-		if !e.ExpiredAt.IsZero() {
-			at := e.ExpiredAt
+		if !item.ExpiredAt.IsZero() {
+			at := item.ExpiredAt
 			v := resp.Value{
 				Type: resp.Array,
 				Items: []resp.Value{
