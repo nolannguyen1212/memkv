@@ -51,9 +51,12 @@ func (l *List) Lpop(key string, count int) []Item {
 
 	items := make([]Item, 0, count)
 	for range count {
-		item, ok := l.items[key].PopFront()
-		if ok {
-			items = append(items, item)
+		deque, exist := l.items[key]
+		if exist {
+			item, ok := deque.PopFront()
+			if ok {
+				items = append(items, item)
+			}
 		}
 	}
 	return items
@@ -65,9 +68,12 @@ func (l *List) Rpop(key string, count int) []Item {
 
 	items := make([]Item, 0, count)
 	for range count {
-		item, ok := l.items[key].PopBack()
-		if ok {
-			items = append(items, item)
+		deque, exist := l.items[key]
+		if exist {
+			item, ok := deque.PopBack()
+			if ok {
+				items = append(items, item)
+			}
 		}
 	}
 	return items
@@ -97,7 +103,7 @@ func (l *List) Lrange(key string, start int, stop int) ([]Item, bool) {
 		stop = len - 1
 	}
 
-	if start >= stop {
+	if start > stop {
 		return []Item{}, true
 	}
 
