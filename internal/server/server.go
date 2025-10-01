@@ -22,6 +22,7 @@ type Server struct {
 	listener net.Listener
 	dict     *datastructure.Dict
 	set      *datastructure.Set
+	list     *datastructure.List
 	pubsub   *datastructure.Pubsub
 	aof      *persistence.AOF
 	rdb      *persistence.RDB
@@ -54,6 +55,7 @@ func (s *Server) initialize() error {
 
 	s.dict = datastructure.CreateDict()
 	s.set = datastructure.CreateSet()
+	s.list = datastructure.CreateList()
 	s.pubsub = datastructure.CreatePubsub()
 
 	aofFile := config.Global.Persistence.AOF.Filename
@@ -66,7 +68,14 @@ func (s *Server) initialize() error {
 		return err
 	}
 
-	command.Init(&command.DB{Dict: s.dict, Set: s.set, Pubsub: s.pubsub, AOF: s.aof, RDB: s.rdb})
+	command.Init(&command.DB{
+		Dict:   s.dict,
+		Set:    s.set,
+		List:   s.list,
+		Pubsub: s.pubsub,
+		AOF:    s.aof,
+		RDB:    s.rdb,
+	})
 
 	s.loadRDB()
 	s.loadAOF()

@@ -235,7 +235,7 @@ make clean
 - [x] Connection timeouts
 - [x] Pattern-based key matching (KEYS command)
 - [x] Comprehensive test coverage
-- [ ] List data structure (LPUSH, RPUSH, LPOP, RPOP, LRANGE)
+- [x] List data structure (LPUSH, RPUSH, LPOP, RPOP, LRANGE)
 - [ ] Hash data structure (HSET, HGET, HDEL, HGETALL)
 - [ ] Sorted sets with scores (ZADD, ZRANGE, ZRANK)
 - [ ] Transaction support (MULTI/EXEC/DISCARD)
