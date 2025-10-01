@@ -2,6 +2,7 @@ package command
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/william1nguyen/valkeydb/internal/datastructure"
 	"github.com/william1nguyen/valkeydb/internal/persistence"
@@ -15,6 +16,7 @@ type ListStore interface {
 	Rpop(key string, count int) []datastructure.Item
 	Llen(key string) int
 	Lrange(key string, start int, stop int) ([]datastructure.Item, bool)
+	Sort(key string, asc bool, alpha bool)
 }
 
 type ListContext struct {
@@ -33,6 +35,7 @@ func InitListCommands() {
 	Register("RPOP", cmdRpop)
 	Register("LLEN", cmdLlen)
 	Register("LRANGE", cmdLrange)
+	Register("SORT", cmdSort)
 }
 
 func cmdLpush(args []resp.Value) resp.Value {
@@ -165,5 +168,40 @@ func cmdLrange(args []resp.Value) resp.Value {
 	return resp.Value{
 		Type:  resp.Array,
 		Items: items,
+	}
+}
+
+func cmdSort(args []resp.Value) resp.Value {
+	if len(args) > 2 {
+		return resp.Value{
+			Type: resp.Error,
+			Text: "ERR wrong number of arguments for 'sort'",
+		}
+	}
+	key := args[0].Text
+	asc := true
+	alpha := false
+	if len(args) > 1 {
+		for i := 1; i < len(args); i++ {
+			option := strings.ToUpper(args[i].Text)
+			switch option {
+			case "ASC":
+				asc = true
+			case "DESC":
+				asc = false
+			case "ALPHA":
+				alpha = true
+			default:
+				return resp.Value{
+					Type: resp.Error,
+					Text: "ERR syntax error",
+				}
+			}
+		}
+	}
+	listCtx.List.Sort(key, asc, alpha)
+	return resp.Value{
+		Type: resp.SimpleString,
+		Text: "OK",
 	}
 }

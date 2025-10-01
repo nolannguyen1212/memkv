@@ -1,6 +1,7 @@
 package datastructure
 
 import (
+	"strconv"
 	"sync"
 )
 
@@ -49,6 +50,10 @@ func (l *List) Lpop(key string, count int) []Item {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if l.items[key] == nil {
+		return []Item{}
+	}
+
 	items := make([]Item, 0, count)
 	for range count {
 		deque, exist := l.items[key]
@@ -65,6 +70,10 @@ func (l *List) Lpop(key string, count int) []Item {
 func (l *List) Rpop(key string, count int) []Item {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if l.items[key] == nil {
+		return []Item{}
+	}
 
 	items := make([]Item, 0, count)
 	for range count {
@@ -83,6 +92,10 @@ func (l *List) Llen(key string) int {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
+	if l.items[key] == nil {
+		return 0
+	}
+
 	return l.items[key].size
 }
 
@@ -90,7 +103,15 @@ func (l *List) Lrange(key string, start int, stop int) ([]Item, bool) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	len := l.Llen(key)
+	if l.items[key] == nil {
+		return []Item{}, false
+	}
+
+	len := l.items[key].size
+	if len == 0 {
+		return []Item{}, false
+	}
+
 	if start < 0 {
 		start += len
 	}
@@ -114,4 +135,32 @@ func (l *List) Lrange(key string, start int, stop int) ([]Item, bool) {
 	}
 
 	return items, true
+}
+
+func (l *List) Sort(key string, asc bool, alpha bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.items[key] == nil {
+		return
+	}
+
+	l.items[key].Sort(func(i, j Item) bool {
+		var less bool
+		if alpha {
+			less = i.Value < j.Value
+		} else {
+			a, erra := strconv.ParseFloat(i.Value, 64)
+			b, errb := strconv.ParseFloat(j.Value, 64)
+			if erra != nil || errb != nil {
+				less = i.Value < j.Value
+			} else {
+				less = a < b
+			}
+		}
+		if asc {
+			return less
+		}
+		return !less
+	})
 }

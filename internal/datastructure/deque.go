@@ -1,5 +1,7 @@
 package datastructure
 
+import "sort"
+
 type Deque[T any] struct {
 	items    []T
 	head     int
@@ -94,4 +96,26 @@ func (d *Deque[T]) PopBack() (T, bool) {
 	d.items[d.tail] = zero
 	d.size--
 	return value, true
+}
+
+func (d *Deque[T]) Sort(less func(i, j T) bool) {
+	if d.Empty() {
+		return
+	}
+
+	temp := make([]T, d.size)
+	for i := 0; i < d.size; i++ {
+		pos := (d.head + i) % d.capacity
+		temp[i] = d.items[pos]
+	}
+
+	sort.Slice(temp, func(i, j int) bool {
+		return less(temp[i], temp[j])
+	})
+
+	d.head = 0
+	d.tail = d.size
+	for i := 0; i < d.size; i++ {
+		d.items[i] = temp[i]
+	}
 }
