@@ -125,7 +125,7 @@ Implementation: [command/list_command.go](internal/command/list_command.go)
 | `LPOP key [count]` | Pop from head | `LPOP mylist 2` |
 | `RPOP key [count]` | Pop from tail | `RPOP mylist 2` |
 | `LRANGE key start stop` | Get a range | `LRANGE mylist 0 -1` |
-| `SORT key [ASC|DESC] [ALPHA]` | In-place sort list | `SORT mylist ASC` |
+| `SORT key [ASC\|DESC] [ALPHA]` | In-place sort list | `SORT mylist ASC` |
 
 ### Hash Commands
 
