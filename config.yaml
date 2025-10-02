@@ -8,6 +8,7 @@ server:
   # Connection timeouts (in seconds)
   read_timeout: 300   # 5 minutes
   write_timeout: 300  # 5 minutes
+  auth: secretpassword
 
 persistence:
   # Append-Only File (AOF) settings

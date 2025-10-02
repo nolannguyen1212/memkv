@@ -3,7 +3,6 @@ package server
 import (
 	"bufio"
 	"context"
-	"io"
 	"log"
 	"net"
 	"strings"
@@ -206,7 +205,7 @@ func (s *Server) Close(ctx context.Context) error {
 	case <-done:
 	case <-ctx.Done():
 	}
-	
+
 	if s.rdb != nil && config.Global.Persistence.RDB.Enabled {
 		snapshot := persistence.Snapshot{
 			DictData: s.dict.Dump(),
@@ -216,7 +215,7 @@ func (s *Server) Close(ctx context.Context) error {
 		}
 		_ = s.rdb.Save(snapshot, config.Global.Persistence.RDB.Filename)
 	}
-	
+
 	if s.aof != nil {
 		_ = s.aof.Close()
 	}
@@ -231,11 +230,41 @@ func (s *Server) handleConn(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 
+	authed := config.Global.GetAuth() == ""
+
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(config.Global.GetReadTimeout()))
 		req, err := s.readRequest(reader, conn)
 		if err != nil {
 			return
+		}
+
+		var cmd string
+		if req.Type == resp.Array && len(req.Items) > 0 {
+			cmd = strings.ToUpper(req.Items[0].Text)
+		}
+
+		if !authed {
+			switch cmd {
+			case "AUTH":
+				respVal := s.dispatchCommand(req)
+				if respVal.Type == resp.SimpleString && respVal.Text == "OK" {
+					authed = true
+				}
+				_ = conn.SetWriteDeadline(time.Now().Add(config.Global.GetWriteTimeout()))
+				if err := s.writeResponse(writer, conn, respVal); err != nil {
+					return
+				}
+				continue
+			case "PING", "QUIT":
+			default:
+				v := resp.Value{Type: resp.Error, Text: "NOAUTH Authentication required."}
+				_ = conn.SetWriteDeadline(time.Now().Add(config.Global.GetWriteTimeout()))
+				if err := s.writeResponse(writer, conn, v); err != nil {
+					return
+				}
+				continue
+			}
 		}
 
 		respVal := s.dispatchCommand(req)
@@ -244,12 +273,9 @@ func (s *Server) handleConn(conn net.Conn) {
 			return
 		}
 
-		if req.Type == resp.Array && len(req.Items) > 0 {
-			cmd := strings.ToUpper(req.Items[0].Text)
-			if cmd == "SUBSCRIBE" {
-				s.pubsubMode(conn, writer)
-				return
-			}
+		if cmd == "SUBSCRIBE" {
+			s.pubsubMode(conn, writer)
+			return
 		}
 	}
 }
@@ -271,11 +297,7 @@ func (s *Server) pubsubMode(conn net.Conn, writer *bufio.Writer) {
 func (s *Server) readRequest(r *bufio.Reader, conn net.Conn) (resp.Value, error) {
 	req, err := resp.Decode(r)
 	if err != nil {
-		if err == io.EOF {
-			log.Printf("%s disconnected", conn.RemoteAddr())
-		} else {
-			log.Printf("%s decode error: %v", conn.RemoteAddr(), err)
-		}
+		log.Printf("%s disconnected", conn.RemoteAddr())
 		return resp.Value{}, err
 	}
 	return req, nil

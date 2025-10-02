@@ -18,6 +18,7 @@ type ServerConfig struct {
 	Addr         string `yaml:"addr"`
 	ReadTimeout  int    `yaml:"read_timeout"`
 	WriteTimeout int    `yaml:"write_timeout"`
+	Auth         string `yaml:"auth"`
 }
 
 type PersistenceConfig struct {
@@ -82,4 +83,8 @@ func (c *Config) GetAOFRewriteInterval() time.Duration {
 
 func (c *Config) GetExpirationCheckInterval() time.Duration {
 	return time.Duration(c.Datastructure.Expiration.CheckInterval) * time.Second
+}
+
+func (c *Config) GetAuth() string {
+	return c.Server.Auth
 }

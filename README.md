@@ -159,6 +159,37 @@ Implementation: [command/system_command.go](internal/command/system_command.go)
 | `BGSAVE [filename]` | Background save to RDB | `BGSAVE` |
 | `KEYS pattern` | Find keys matching pattern | `KEYS user:*` |
 
+### Authentication
+
+Optional per-connection gate requiring clients to authenticate before most commands.
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `AUTH password` | Authenticate the connection | `AUTH secretpassword` |
+
+- Allowed before auth: `AUTH`, `PING`, `QUIT`.
+- If no password is configured, auth is disabled.
+
+Enable in `config.yaml`:
+
+```yaml
+server:
+  addr: ":6379"
+  read_timeout: 300
+  write_timeout: 300
+  auth: secretpassword
+```
+
+Example:
+
+```bash
+redis-cli -p 6379
+AUTH secretpassword
+OK
+SET a 1
+GET a
+```
+
 ## Configuration
 
 Edit `config.yaml` to customize server behavior:
@@ -267,7 +298,7 @@ make clean
 - [x] Hash data structure (HSET multi-field, HGET, HDEL, HGETALL, HEXISTS, HLEN)
 - [ ] Sorted sets with scores (ZADD, ZRANGE, ZRANK)
 - [ ] Transaction support (MULTI/EXEC/DISCARD)
-- [ ] Authentication (AUTH command)
+- [x] Authentication (AUTH command)
 - [ ] Pipelining for batch command execution
 - [ ] Monitoring and INFO command for server statistics
 - [ ] Replication (master-slave)

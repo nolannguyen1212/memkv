@@ -4,6 +4,7 @@ import (
 	"log"
 	"path/filepath"
 
+	"github.com/william1nguyen/valkeydb/internal/config"
 	"github.com/william1nguyen/valkeydb/internal/persistence"
 	"github.com/william1nguyen/valkeydb/internal/protocol/resp"
 )
@@ -17,8 +18,30 @@ var sysCtx *SystemContext
 func SetSystemContext(c *SystemContext) { sysCtx = c }
 
 func InitSystemCommands() {
+	Register("AUTH", cmdAuth)
 	Register("BGSAVE", cmdBgsave)
 	Register("KEYS", cmdKeys)
+}
+
+func cmdAuth(args []resp.Value) resp.Value {
+	if len(args) > 1 {
+		return resp.Value{
+			Type: resp.Error,
+			Text: "ERR wrong number of arguments for 'auth'",
+		}
+	}
+
+	auth := args[0].Text
+	if auth != config.Global.GetAuth() {
+		return resp.Value{
+			Type: resp.Error,
+			Text: "ERR auth is not correct",
+		}
+	}
+	return resp.Value{
+		Type: resp.SimpleString,
+		Text: "OK",
+	}
 }
 
 func cmdBgsave(args []resp.Value) resp.Value {
