@@ -36,10 +36,12 @@ ValkeyDB is a high-performance, Redis-compatible in-memory database implementati
 - **Multiple Data Structures**: 
   - Dictionary (String key-value pairs) - [datastructure/dict.go](internal/datastructure/dict.go)
   - Sets (Unique collections) - [datastructure/set.go](internal/datastructure/set.go)
+  - Lists (Deque semantics; LPUSH, RPUSH, LPOP, RPOP, LRANGE, SORT) - [datastructure/list.go](internal/datastructure/list.go)
+  - Hashes (HSET multi field-value, HGET, HDEL, HGETALL, HEXISTS, HLEN) - [datastructure/hashmap.go](internal/datastructure/hashmap.go)
   - Pub/Sub (Message broadcasting) - [datastructure/pubsub.go](internal/datastructure/pubsub.go)
 - **Dual Persistence**:
-  - AOF (Append-Only File): Write-ahead logging with automatic rewrite - [persistence/aof.go](internal/persistence/aof.go)
-  - RDB (Redis Database): Point-in-time snapshots with background saving - [persistence/rdb.go](internal/persistence/rdb.go)
+  - AOF (Append-Only File): Write-ahead logging with automatic rewrite; includes dict, set, list (RPUSH), hash (HSET) - [persistence/aof.go](internal/persistence/aof.go)
+  - RDB (Redis Database): Point-in-time snapshots with background saving; includes dict, set, list, hash - [persistence/rdb.go](internal/persistence/rdb.go)
 - **TTL Support**: Automatic key expiration with both passive and active expiration strategies
 - **Concurrent Access**: Thread-safe operations with efficient read-write locking mechanisms
 - **Configurable**: YAML-based configuration for all server settings - [config.yaml](config.yaml)
@@ -112,6 +114,32 @@ Implementation: [command/set_command.go](internal/command/set_command.go)
 | `SEXPIRE key seconds` | Set expiration for a set | `SEXPIRE myset 60` |
 | `STTL key` | Get TTL for a set | `STTL myset` |
 
+### List Commands
+
+Implementation: [command/list_command.go](internal/command/list_command.go)
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `LPUSH key value [value ...]` | Push values to the head | `LPUSH mylist a b c` |
+| `RPUSH key value [value ...]` | Push values to the tail | `RPUSH mylist a b c` |
+| `LPOP key [count]` | Pop from head | `LPOP mylist 2` |
+| `RPOP key [count]` | Pop from tail | `RPOP mylist 2` |
+| `LRANGE key start stop` | Get a range | `LRANGE mylist 0 -1` |
+| `SORT key [ASC|DESC] [ALPHA]` | In-place sort list | `SORT mylist ASC` |
+
+### Hash Commands
+
+Implementation: [command/hash_command.go](internal/command/hash_command.go)
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `HSET key field value [field value ...]` | Set one or more field-value pairs; returns count of new fields | `HSET myhash f1 v1 f2 v2` |
+| `HGET key field` | Get value of a field | `HGET myhash f1` |
+| `HDEL key field [field ...]` | Delete fields; returns count removed | `HDEL myhash f1 f2` |
+| `HGETALL key` | Get all field-value pairs | `HGETALL myhash` |
+| `HEXISTS key field` | Check if field exists | `HEXISTS myhash f1` |
+| `HLEN key` | Number of fields | `HLEN myhash` |
+
 ### Pub/Sub Commands
 
 Implementation: [command/pubsub_command.go](internal/command/pubsub_command.go)
@@ -170,9 +198,9 @@ logging:
 valkeydb/
 ├── cmd/valkeydb/          # Application entry point
 ├── internal/
-│   ├── command/           # Command handlers (dict, set, pubsub, system)
+│   ├── command/           # Command handlers (dict, set, list, hash, pubsub, system)
 │   ├── config/            # Configuration management
-│   ├── datastructure/     # Core data structures (Dict, Set, Pubsub)
+│   ├── datastructure/     # Core data structures (Dict, Set, List, Hash, Pubsub)
 │   ├── persistence/       # Persistence layer (AOF, RDB)
 │   ├── protocol/resp/     # RESP protocol implementation
 │   └── server/            # TCP server and connection handling
@@ -235,8 +263,8 @@ make clean
 - [x] Connection timeouts
 - [x] Pattern-based key matching (KEYS command)
 - [x] Comprehensive test coverage
-- [x] List data structure (LPUSH, RPUSH, LPOP, RPOP, LRANGE)
-- [ ] Hash data structure (HSET, HGET, HDEL, HGETALL)
+- [x] List data structure (LPUSH, RPUSH, LPOP, RPOP, LRANGE, SORT)
+- [x] Hash data structure (HSET multi-field, HGET, HDEL, HGETALL, HEXISTS, HLEN)
 - [ ] Sorted sets with scores (ZADD, ZRANGE, ZRANK)
 - [ ] Transaction support (MULTI/EXEC/DISCARD)
 - [ ] Authentication (AUTH command)
