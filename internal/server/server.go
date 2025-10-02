@@ -23,6 +23,7 @@ type Server struct {
 	dict     *datastructure.Dict
 	set      *datastructure.Set
 	list     *datastructure.List
+	hash     *datastructure.HashMap
 	pubsub   *datastructure.Pubsub
 	aof      *persistence.AOF
 	rdb      *persistence.RDB
@@ -56,6 +57,7 @@ func (s *Server) initialize() error {
 	s.dict = datastructure.CreateDict()
 	s.set = datastructure.CreateSet()
 	s.list = datastructure.CreateList()
+	s.hash = datastructure.CreateHashMap()
 	s.pubsub = datastructure.CreatePubsub()
 
 	aofFile := config.Global.Persistence.AOF.Filename
@@ -72,6 +74,7 @@ func (s *Server) initialize() error {
 		Dict:   s.dict,
 		Set:    s.set,
 		List:   s.list,
+		Hash:   s.hash,
 		Pubsub: s.pubsub,
 		AOF:    s.aof,
 		RDB:    s.rdb,
@@ -114,7 +117,23 @@ func (s *Server) loadRDB() {
 		}
 	}
 
-	log.Printf("RDB loaded: %d dict keys, %d set keys", len(snapshot.DictData), len(snapshot.SetData))
+	for key, items := range snapshot.ListData {
+		if len(items) > 0 {
+			values := make([]string, 0, len(items))
+			for _, item := range items {
+				values = append(values, item.Value)
+			}
+			s.list.Rpush(key, values...)
+		}
+	}
+
+	for key, hash := range snapshot.HashData {
+		for field, value := range hash {
+			s.hash.Hset(key, field, value)
+		}
+	}
+
+	log.Printf("RDB loaded: %d dict keys, %d set keys, %d list keys, %d hash keys", len(snapshot.DictData), len(snapshot.SetData), len(snapshot.ListData), len(snapshot.HashData))
 }
 
 func (s *Server) loadAOF() {
@@ -142,18 +161,8 @@ func (s *Server) startBackgroundTasks() {
 }
 
 func (s *Server) rewriteAOF() {
-	combined := make(map[string]datastructure.Item)
-	for k, v := range s.dict.Dump() {
-		combined[k] = v
-	}
-	for k, v := range s.set.Dump() {
-		combined[k] = v
-	}
-
 	aofFile := config.Global.Persistence.AOF.Filename
-	if err := s.aof.Rewrite(func() map[string]datastructure.Item {
-		return combined
-	}, aofFile); err != nil {
+	if err := s.aof.RewriteWithLists(s.dict.Dump(), s.set.Dump(), s.list.Dump(), s.hash.Dump(), aofFile); err != nil {
 		log.Printf("aof rewrite error: %v", err)
 	} else {
 		log.Printf("aof rewrite done")
@@ -197,8 +206,22 @@ func (s *Server) Close(ctx context.Context) error {
 	case <-done:
 	case <-ctx.Done():
 	}
+	
+	if s.rdb != nil && config.Global.Persistence.RDB.Enabled {
+		snapshot := persistence.Snapshot{
+			DictData: s.dict.Dump(),
+			SetData:  s.set.Dump(),
+			ListData: s.list.Dump(),
+			HashData: s.hash.Dump(),
+		}
+		_ = s.rdb.Save(snapshot, config.Global.Persistence.RDB.Filename)
+	}
+	
 	if s.aof != nil {
 		_ = s.aof.Close()
+	}
+	if s.rdb != nil {
+		_ = s.rdb.Close()
 	}
 	return nil
 }

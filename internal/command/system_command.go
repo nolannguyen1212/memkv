@@ -31,6 +31,8 @@ func cmdBgsave(args []resp.Value) resp.Value {
 		snapshot := persistence.Snapshot{
 			DictData: sysCtx.DB.Dict.Dump(),
 			SetData:  sysCtx.DB.Set.Dump(),
+			ListData: sysCtx.DB.List.Dump(),
+			HashData: sysCtx.DB.Hash.Dump(),
 		}
 
 		if err := sysCtx.DB.RDB.Save(snapshot, filename); err != nil {
@@ -59,6 +61,20 @@ func cmdKeys(args []resp.Value) resp.Value {
 
 	setSnapshot := sysCtx.DB.Set.Dump()
 	for key := range setSnapshot {
+		if matched, _ := filepath.Match(pattern, key); matched {
+			matchedKeys = append(matchedKeys, key)
+		}
+	}
+
+	listSnapshot := sysCtx.DB.List.Dump()
+	for key := range listSnapshot {
+		if matched, _ := filepath.Match(pattern, key); matched {
+			matchedKeys = append(matchedKeys, key)
+		}
+	}
+
+	hashSnapshot := sysCtx.DB.Hash.Dump()
+	for key := range hashSnapshot {
 		if matched, _ := filepath.Match(pattern, key); matched {
 			matchedKeys = append(matchedKeys, key)
 		}

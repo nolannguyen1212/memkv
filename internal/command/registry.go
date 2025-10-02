@@ -14,6 +14,7 @@ type DB struct {
 	Dict   *datastructure.Dict
 	Set    *datastructure.Set
 	List   *datastructure.List
+	Hash   *datastructure.HashMap
 	AOF    *persistence.AOF
 	RDB    *persistence.RDB
 	Pubsub *datastructure.Pubsub
@@ -41,6 +42,8 @@ func Init(db *DB) {
 	SetPubsubContext(&PubsubContext{Pubsub: db.Pubsub})
 	InitPubsubCommands()
 
+	SetHashContext(&HashContext{Hash: db.Hash, AOF: db.AOF})
+	InitHashCommands()
 }
 
 func Register(name string, h Handler) {

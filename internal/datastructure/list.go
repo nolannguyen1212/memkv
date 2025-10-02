@@ -50,19 +50,21 @@ func (l *List) Lpop(key string, count int) []Item {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.items[key] == nil {
+	deque := l.items[key]
+	if deque == nil {
 		return []Item{}
 	}
 
 	items := make([]Item, 0, count)
-	for range count {
-		deque, exist := l.items[key]
-		if exist {
-			item, ok := deque.PopFront()
-			if ok {
-				items = append(items, item)
-			}
+	for i := 0; i < count; i++ {
+		item, ok := deque.PopFront()
+		if !ok {
+			break
 		}
+		items = append(items, item)
+	}
+	if deque.Empty() {
+		delete(l.items, key)
 	}
 	return items
 }
@@ -71,19 +73,21 @@ func (l *List) Rpop(key string, count int) []Item {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.items[key] == nil {
+	deque := l.items[key]
+	if deque == nil {
 		return []Item{}
 	}
 
 	items := make([]Item, 0, count)
-	for range count {
-		deque, exist := l.items[key]
-		if exist {
-			item, ok := deque.PopBack()
-			if ok {
-				items = append(items, item)
-			}
+	for i := 0; i < count; i++ {
+		item, ok := deque.PopBack()
+		if !ok {
+			break
 		}
+		items = append(items, item)
+	}
+	if deque.Empty() {
+		delete(l.items, key)
 	}
 	return items
 }
@@ -103,37 +107,32 @@ func (l *List) Lrange(key string, start int, stop int) ([]Item, bool) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	if l.items[key] == nil {
-		return []Item{}, false
-	}
-
-	len := l.items[key].size
-	if len == 0 {
+	deque := l.items[key]
+	if deque == nil || deque.size == 0 {
 		return []Item{}, false
 	}
 
 	if start < 0 {
-		start += len
+		start += deque.size
 	}
-
 	if stop < 0 {
-		stop += len
+		stop += deque.size
 	}
-
-	if stop >= len {
-		stop = len - 1
+	if start < 0 {
+		start = 0
 	}
-
+	if stop >= deque.size {
+		stop = deque.size - 1
+	}
 	if start > stop {
 		return []Item{}, true
 	}
 
 	items := make([]Item, 0, stop-start+1)
 	for i := start; i <= stop; i++ {
-		pos := (l.items[key].head + i) % l.items[key].capacity
-		items = append(items, l.items[key].items[pos])
+		pos := (deque.head + i) % deque.capacity
+		items = append(items, deque.items[pos])
 	}
-
 	return items, true
 }
 
@@ -163,4 +162,23 @@ func (l *List) Sort(key string, asc bool, alpha bool) {
 		}
 		return !less
 	})
+}
+
+func (l *List) Dump() map[string][]Item {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	snapshot := make(map[string][]Item, len(l.items))
+	for key, deque := range l.items {
+		if deque == nil || deque.size == 0 {
+			continue
+		}
+		items := make([]Item, 0, deque.size)
+		for i := 0; i < deque.size; i++ {
+			pos := (deque.head + i) % deque.capacity
+			items = append(items, deque.items[pos])
+		}
+		snapshot[key] = items
+	}
+	return snapshot
 }

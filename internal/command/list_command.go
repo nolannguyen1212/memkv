@@ -51,6 +51,13 @@ func cmdLpush(args []resp.Value) resp.Value {
 		values = append(values, a.Text)
 	}
 	n := listCtx.List.Lpush(key, values...)
+	if listCtx.AOF != nil && n > 0 {
+		arr := []resp.Value{{Type: resp.BulkString, Text: "LPUSH"}, {Type: resp.BulkString, Text: key}}
+		for _, v := range values {
+			arr = append(arr, resp.Value{Type: resp.BulkString, Text: v})
+		}
+		_ = listCtx.AOF.Append(resp.Value{Type: resp.Array, Items: arr})
+	}
 	return resp.Value{Type: resp.Integer, Number: int64(n)}
 }
 
@@ -67,11 +74,18 @@ func cmdRpush(args []resp.Value) resp.Value {
 		values = append(values, a.Text)
 	}
 	n := listCtx.List.Rpush(key, values...)
+	if listCtx.AOF != nil && n > 0 {
+		arr := []resp.Value{{Type: resp.BulkString, Text: "RPUSH"}, {Type: resp.BulkString, Text: key}}
+		for _, v := range values {
+			arr = append(arr, resp.Value{Type: resp.BulkString, Text: v})
+		}
+		_ = listCtx.AOF.Append(resp.Value{Type: resp.Array, Items: arr})
+	}
 	return resp.Value{Type: resp.Integer, Number: int64(n)}
 }
 
 func cmdLpop(args []resp.Value) resp.Value {
-	if len(args) > 2 {
+	if len(args) < 1 || len(args) > 2 {
 		return resp.Value{
 			Type: resp.Error,
 			Text: "ERR wrong number of arguments for 'lpop'",
@@ -98,7 +112,7 @@ func cmdLpop(args []resp.Value) resp.Value {
 }
 
 func cmdRpop(args []resp.Value) resp.Value {
-	if len(args) > 2 {
+	if len(args) < 1 || len(args) > 2 {
 		return resp.Value{
 			Type: resp.Error,
 			Text: "ERR wrong number of arguments for 'rpop'",
@@ -172,7 +186,7 @@ func cmdLrange(args []resp.Value) resp.Value {
 }
 
 func cmdSort(args []resp.Value) resp.Value {
-	if len(args) > 2 {
+	if len(args) < 1 {
 		return resp.Value{
 			Type: resp.Error,
 			Text: "ERR wrong number of arguments for 'sort'",
@@ -200,6 +214,13 @@ func cmdSort(args []resp.Value) resp.Value {
 		}
 	}
 	listCtx.List.Sort(key, asc, alpha)
+	if listCtx.AOF != nil {
+		arr := []resp.Value{{Type: resp.BulkString, Text: "SORT"}, {Type: resp.BulkString, Text: key}}
+		for i := 1; i < len(args); i++ {
+			arr = append(arr, args[i])
+		}
+		_ = listCtx.AOF.Append(resp.Value{Type: resp.Array, Items: arr})
+	}
 	return resp.Value{
 		Type: resp.SimpleString,
 		Text: "OK",

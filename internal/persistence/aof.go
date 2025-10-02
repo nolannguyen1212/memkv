@@ -131,7 +131,7 @@ func (a *AOF) Rewrite(dump func() map[string]datastructure.Item, path string) er
 			if _, err := f.WriteString(resp.Encode(v)); err != nil {
 				return err
 			}
-		} else {
+		} else if item.Value != "" {
 			v := resp.Value{
 				Type: resp.Array,
 				Items: []resp.Value{
@@ -156,6 +156,115 @@ func (a *AOF) Rewrite(dump func() map[string]datastructure.Item, path string) er
 				},
 			}
 
+			if _, err := f.WriteString(resp.Encode(v)); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := f.Sync(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
+}
+
+func (a *AOF) RewriteWithLists(dictDump map[string]datastructure.Item, setDump map[string]datastructure.Item, listDump map[string][]datastructure.Item, hashDump map[string]map[string]string, path string) error {
+	if !a.enabled {
+		return nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	tmpPath := path + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	for key, item := range dictDump {
+		v := resp.Value{
+			Type: resp.Array,
+			Items: []resp.Value{
+				{Type: resp.BulkString, Text: "SET"},
+				{Type: resp.BulkString, Text: key},
+				{Type: resp.BulkString, Text: item.Value},
+			},
+		}
+		if _, err := f.WriteString(resp.Encode(v)); err != nil {
+			return err
+		}
+		if !item.ExpiredAt.IsZero() {
+			v := resp.Value{
+				Type: resp.Array,
+				Items: []resp.Value{
+					{Type: resp.BulkString, Text: "PEXPIREAT"},
+					{Type: resp.BulkString, Text: key},
+					{Type: resp.BulkString, Text: strconv.FormatInt(item.ExpiredAt.UnixMilli(), 10)},
+				},
+			}
+			if _, err := f.WriteString(resp.Encode(v)); err != nil {
+				return err
+			}
+		}
+	}
+
+	for key, item := range setDump {
+		if len(item.Members) > 0 {
+			items := make([]resp.Value, 0, 2+len(item.Members))
+			items = append(items, resp.Value{Type: resp.BulkString, Text: "SADD"})
+			items = append(items, resp.Value{Type: resp.BulkString, Text: key})
+			for member := range item.Members {
+				items = append(items, resp.Value{Type: resp.BulkString, Text: member})
+			}
+			v := resp.Value{Type: resp.Array, Items: items}
+			if _, err := f.WriteString(resp.Encode(v)); err != nil {
+				return err
+			}
+			if !item.ExpiredAt.IsZero() {
+				v := resp.Value{
+					Type: resp.Array,
+					Items: []resp.Value{
+						{Type: resp.BulkString, Text: "PEXPIREAT"},
+						{Type: resp.BulkString, Text: key},
+						{Type: resp.BulkString, Text: strconv.FormatInt(item.ExpiredAt.UnixMilli(), 10)},
+					},
+				}
+				if _, err := f.WriteString(resp.Encode(v)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	for key, items := range listDump {
+		if len(items) > 0 {
+			vals := make([]resp.Value, 0, 2+len(items))
+			vals = append(vals, resp.Value{Type: resp.BulkString, Text: "RPUSH"})
+			vals = append(vals, resp.Value{Type: resp.BulkString, Text: key})
+			for _, item := range items {
+				vals = append(vals, resp.Value{Type: resp.BulkString, Text: item.Value})
+			}
+			v := resp.Value{Type: resp.Array, Items: vals}
+			if _, err := f.WriteString(resp.Encode(v)); err != nil {
+				return err
+			}
+		}
+	}
+
+	for key, hash := range hashDump {
+		for field, value := range hash {
+			v := resp.Value{
+				Type: resp.Array,
+				Items: []resp.Value{
+					{Type: resp.BulkString, Text: "HSET"},
+					{Type: resp.BulkString, Text: key},
+					{Type: resp.BulkString, Text: field},
+					{Type: resp.BulkString, Text: value},
+				},
+			}
 			if _, err := f.WriteString(resp.Encode(v)); err != nil {
 				return err
 			}

@@ -17,11 +17,19 @@ func TestCmdKeys(t *testing.T) {
 
 	set := datastructure.CreateSet()
 	set.Sadd("myset", "m1")
+	
+	list := datastructure.CreateList()
+	list.Lpush("mylist", "a")
+
+	hash := datastructure.CreateHashMap()
+	hash.Hset("myhash", "field", "value")
 
 	SetSystemContext(&SystemContext{
 		DB: &DB{
 			Dict: dict,
 			Set:  set,
+			List: list,
+			Hash: hash,
 		},
 	})
 
@@ -29,12 +37,14 @@ func TestCmdKeys(t *testing.T) {
 		pattern string
 		want    int
 	}{
-		{"*", 4},
+		{"*", 6},
 		{"user:*", 2},
 		{"user:?", 2},
 		{"session:*", 1},
 		{"*set", 1},
 		{"nonexistent:*", 0},
+		{"*list", 1},
+		{"*hash", 1},
 	}
 
 	for _, tt := range tests {
@@ -64,6 +74,12 @@ func TestCmdBgsave(t *testing.T) {
 	set := datastructure.CreateSet()
 	set.Sadd("myset", "m1")
 
+	list := datastructure.CreateList()
+	list.Lpush("mylist", "a")
+
+	hash := datastructure.CreateHashMap()
+	hash.Hset("myhash", "field", "value")	
+
 	tmpFile := "test_bgsave.rdb"
 	rdb, _ := persistence.OpenRDB(tmpFile, true)
 	defer os.Remove(tmpFile)
@@ -72,6 +88,8 @@ func TestCmdBgsave(t *testing.T) {
 		DB: &DB{
 			Dict: dict,
 			Set:  set,
+			List: list,
+			Hash: hash,
 			RDB:  rdb,
 		},
 	})

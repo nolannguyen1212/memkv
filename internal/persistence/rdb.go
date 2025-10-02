@@ -12,6 +12,8 @@ import (
 type Snapshot struct {
 	DictData map[string]datastructure.Item
 	SetData  map[string]datastructure.Item
+	ListData map[string][]datastructure.Item
+	HashData map[string]map[string]string
 }
 
 type RDB struct {
