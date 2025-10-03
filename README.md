@@ -21,6 +21,7 @@ A lightweight, Redis-compatible in-memory database written in Go.
   - [Key Design Decisions](#key-design-decisions)
 - [Testing](#testing)
 - [Development](#development)
+- [Docker](#docker)
 - [Performance Considerations](#performance-considerations)
 - [TODO](#todo)
 
@@ -306,6 +307,30 @@ make run
 make clean
 ```
 
+## Docker
+
+```bash
+# Build
+docker build -t valkeydb:latest .
+
+# Run with default config
+docker run --rm -p 6379:6379 valkeydb:latest
+
+# Run with custom config
+docker run --rm -p 6379:6379 \
+  -v $(pwd)/config.yaml:/config.yaml:ro \
+  valkeydb:latest
+
+# Persist data files (AOF/RDB) to host
+docker run --rm -p 6379:6379 \
+  -v $(pwd)/data:/data \
+  -v $(pwd)/config.yaml:/config.yaml:ro \
+  valkeydb:latest
+
+# Multi-arch build
+docker buildx build --platform linux/amd64,linux/arm64 -t valkeydb:latest .
+```
+
 ## Performance Considerations
 
 - **Active Expiration**: Configurable sampling to balance CPU usage and memory
@@ -341,7 +366,7 @@ make clean
 - [ ] Lua scripting support (EVAL/EVALSHA)
 - [ ] Slow log for tracking slow commands
 - [ ] Prometheus metrics export
-- [ ] Docker support and containerization
+- [x] Docker support and containerization
 - [ ] HTTP API alongside RESP protocol
 - [ ] Benchmark suite for performance testing
 - [ ] Admin dashboard (web UI)
