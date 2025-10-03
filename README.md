@@ -158,6 +158,40 @@ Implementation: [command/system_command.go](internal/command/system_command.go)
 |---------|-------------|---------|
 | `BGSAVE [filename]` | Background save to RDB | `BGSAVE` |
 | `KEYS pattern` | Find keys matching pattern | `KEYS user:*` |
+| `INFO [section]` | Server statistics. Sections: `server`, `clients`, `memory`, `persistence`, `stats`, `keyspace` | `INFO`, `INFO memory` |
+| `MONITOR` | Stream all commands in real time until the connection closes | `MONITOR` |
+
+#### Monitoring and INFO
+
+INFO returns newline-separated `key:value` lines per section.
+
+Examples:
+
+```bash
+127.0.0.1:6379> INFO memory
+used_memory:123456
+
+127.0.0.1:6379> INFO
+uptime_in_seconds:42
+connected_clients:1
+total_connections_received:3
+used_memory:123456
+aof_enabled:1
+rdb_enabled:1
+bgsave_in_progress:0
+total_commands_processed:10
+db0:dict=2,set=1,list=0,hash=0
+```
+
+MONITOR streams commands as they arrive:
+
+```bash
+127.0.0.1:6379> MONITOR
+OK
+SET a 1
+GET a
+PUBLISH news hello
+```
 
 ### Authentication
 
@@ -300,7 +334,7 @@ make clean
 - [ ] Transaction support (MULTI/EXEC/DISCARD)
 - [x] Authentication (AUTH command)
 - [ ] Pipelining for batch command execution
-- [ ] Monitoring and INFO command for server statistics
+- [x] Monitoring and INFO command for server statistics
 - [ ] Replication (master-slave)
 - [ ] Memory management with LRU/LFU eviction policies
 - [ ] Cluster mode with distributed sharding

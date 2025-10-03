@@ -184,7 +184,9 @@ func (s *Server) acceptLoop() error {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			command.IncConnections()
 			s.handleConn(conn)
+			command.DecConnections()
 		}()
 	}
 }
@@ -267,7 +269,13 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 		}
 
+		if req.Type == resp.Array && len(req.Items) > 0 {
+			cmdUp := strings.ToUpper(req.Items[0].Text)
+			args := req.Items[1:]
+			command.MonitorPublish(cmdUp, args)
+		}
 		respVal := s.dispatchCommand(req)
+		command.IncCommands()
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.GetWriteTimeout()))
 		if err := s.writeResponse(writer, conn, respVal); err != nil {
 			return
@@ -275,6 +283,10 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		if cmd == "SUBSCRIBE" {
 			s.pubsubMode(conn, writer)
+			return
+		}
+		if cmd == "MONITOR" {
+			s.monitorMode(conn, writer)
 			return
 		}
 	}
@@ -287,6 +299,17 @@ func (s *Server) pubsubMode(conn net.Conn, writer *bufio.Writer) {
 	}
 
 	for msg := range msgChan {
+		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.GetWriteTimeout()))
+		if err := s.writeResponse(writer, conn, msg); err != nil {
+			return
+		}
+	}
+}
+
+func (s *Server) monitorMode(conn net.Conn, writer *bufio.Writer) {
+	ch := command.MonitorSubscribe()
+	defer command.MonitorUnsubscribe(ch)
+	for msg := range ch {
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.GetWriteTimeout()))
 		if err := s.writeResponse(writer, conn, msg); err != nil {
 			return
