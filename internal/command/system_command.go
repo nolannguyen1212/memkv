@@ -1,15 +1,15 @@
 package command
 
 import (
+	"fmt"
 	"log"
 	"path/filepath"
-	"fmt"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"strconv"
 
 	"github.com/william1nguyen/valkeydb/internal/config"
 	"github.com/william1nguyen/valkeydb/internal/persistence"
@@ -67,6 +67,7 @@ func cmdInfo(args []resp.Value) resp.Value {
 	setCount := len(sysCtx.DB.Set.Dump())
 	listCount := len(sysCtx.DB.List.Dump())
 	hashCount := len(sysCtx.DB.Hash.Dump())
+
 	appendSection := func(name string, kv []string) {
 		if section == "all" || section == name {
 			for _, line := range kv {
@@ -75,27 +76,34 @@ func cmdInfo(args []resp.Value) resp.Value {
 			}
 		}
 	}
+
 	appendSection("server", []string{
 		"uptime_in_seconds:" + strconv.Itoa(uptime),
 	})
+
 	appendSection("clients", []string{
 		"connected_clients:" + strconv.Itoa(int(getCurrentConnections())),
 		"total_connections_received:" + strconv.FormatUint(getTotalConnections(), 10),
 	})
+
 	appendSection("memory", []string{
 		"used_memory:" + strconv.FormatUint(m.Alloc, 10),
 	})
+
 	appendSection("persistence", []string{
 		"aof_enabled:" + boolToInt(config.Global.Persistence.AOF.Enabled),
 		"rdb_enabled:" + boolToInt(config.Global.Persistence.RDB.Enabled),
 		"bgsave_in_progress:" + strconv.Itoa(int(atomic.LoadInt32(&bgsaveInProg))),
 	})
+
 	appendSection("stats", []string{
 		"total_commands_processed:" + strconv.FormatUint(getTotalCommands(), 10),
 	})
+
 	appendSection("keyspace", []string{
 		fmt.Sprintf("db0:dict=%d,set=%d,list=%d,hash=%d", dictCount, setCount, listCount, hashCount),
 	})
+
 	return resp.Value{Type: resp.BulkString, Text: b.String()}
 }
 
@@ -173,14 +181,14 @@ func cmdMonitor(args []resp.Value) resp.Value {
 }
 
 var (
-	startedAt     time.Time
-	bgsaveInProg  int32
-	statMu        sync.Mutex
-	totalCmds     uint64
-	totalConns    uint64
-	currentConns  int64
-	monMu         sync.RWMutex
-	monSubs       = map[chan resp.Value]struct{}{}
+	startedAt    time.Time
+	bgsaveInProg int32
+	statMu       sync.Mutex
+	totalCmds    uint64
+	totalConns   uint64
+	currentConns int64
+	monMu        sync.RWMutex
+	monSubs      = map[chan resp.Value]struct{}{}
 )
 
 func boolToInt(b bool) string {
@@ -190,16 +198,63 @@ func boolToInt(b bool) string {
 	return "0"
 }
 
-func getTotalCommands() uint64 { statMu.Lock(); defer statMu.Unlock(); return totalCmds }
-func incTotalCommands() { statMu.Lock(); totalCmds++; statMu.Unlock() }
-func getTotalConnections() uint64 { statMu.Lock(); defer statMu.Unlock(); return totalConns }
-func getCurrentConnections() int64 { statMu.Lock(); defer statMu.Unlock(); return currentConns }
-func IncConnections() { statMu.Lock(); totalConns++; currentConns++; statMu.Unlock() }
-func DecConnections() { statMu.Lock(); if currentConns > 0 { currentConns-- }; statMu.Unlock() }
-func IncCommands() { incTotalCommands() }
+func getTotalCommands() uint64 {
+	statMu.Lock()
+	defer statMu.Unlock()
+	return totalCmds
+}
 
-func MonitorSubscribe() chan resp.Value { ch := make(chan resp.Value, 128); monMu.Lock(); monSubs[ch] = struct{}{}; monMu.Unlock(); return ch }
-func MonitorUnsubscribe(ch chan resp.Value) { monMu.Lock(); delete(monSubs, ch); close(ch); monMu.Unlock() }
+func incTotalCommands() {
+	statMu.Lock()
+	totalCmds++
+	statMu.Unlock()
+}
+
+func getTotalConnections() uint64 {
+	statMu.Lock()
+	defer statMu.Unlock()
+	return totalConns
+}
+
+func getCurrentConnections() int64 {
+	statMu.Lock()
+	defer statMu.Unlock()
+	return currentConns
+}
+
+func IncConnections() {
+	statMu.Lock()
+	totalConns++
+	currentConns++
+	statMu.Unlock()
+}
+
+func DecConnections() {
+	statMu.Lock()
+	if currentConns > 0 {
+		currentConns--
+	}
+	statMu.Unlock()
+}
+
+func IncCommands() {
+	incTotalCommands()
+}
+
+func MonitorSubscribe() chan resp.Value {
+	ch := make(chan resp.Value, 128)
+	monMu.Lock()
+	monSubs[ch] = struct{}{}
+	monMu.Unlock()
+	return ch
+}
+func MonitorUnsubscribe(ch chan resp.Value) {
+	monMu.Lock()
+	delete(monSubs, ch)
+	close(ch)
+	monMu.Unlock()
+}
+
 func MonitorPublish(cmd string, args []resp.Value) {
 	monMu.RLock()
 	if len(monSubs) == 0 {
@@ -208,7 +263,10 @@ func MonitorPublish(cmd string, args []resp.Value) {
 	}
 	msg := buildMonitorLine(cmd, args)
 	for ch := range monSubs {
-		select { case ch <- resp.Value{Type: resp.BulkString, Text: msg}: default: }
+		select {
+		case ch <- resp.Value{Type: resp.BulkString, Text: msg}:
+		default:
+		}
 	}
 	monMu.RUnlock()
 }
