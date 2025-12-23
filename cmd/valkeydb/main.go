@@ -3,18 +3,11 @@ package main
 import (
 	"log"
 
-	"github.com/william1nguyen/valkeydb/command"
-	_ "github.com/william1nguyen/valkeydb/command/hashcmd"
-	_ "github.com/william1nguyen/valkeydb/command/listcmd"
-	_ "github.com/william1nguyen/valkeydb/command/pubsubcmd"
-	_ "github.com/william1nguyen/valkeydb/command/setcmd"
-	_ "github.com/william1nguyen/valkeydb/command/stringcmd"
-	"github.com/william1nguyen/valkeydb/command/systemcmd"
-	"github.com/william1nguyen/valkeydb/config"
-	"github.com/william1nguyen/valkeydb/core/store"
-	"github.com/william1nguyen/valkeydb/persistence"
-	"github.com/william1nguyen/valkeydb/protocol"
-	"github.com/william1nguyen/valkeydb/server"
+	"github.com/william1nguyen/valkeydb/internal/config"
+	"github.com/william1nguyen/valkeydb/internal/core"
+	"github.com/william1nguyen/valkeydb/internal/persistence"
+	"github.com/william1nguyen/valkeydb/internal/protocol"
+	"github.com/william1nguyen/valkeydb/internal/server"
 )
 
 const defaultConfigPath = "config.yaml"
@@ -24,16 +17,18 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	systemcmd.Configure(
+	core.ConfigureSystem(
 		config.Global.Server.Auth,
 		config.Global.Persistence.AOF.Enabled,
 		config.Global.Persistence.RDB.Enabled,
 	)
 
-	dataStore := store.New(store.Config{
+	store := core.NewStore(core.StoreConfig{
 		ExpirationCheckInterval: config.Global.ExpirationCheckInterval(),
 		ExpirationMaxSampleSize: config.Global.Datastructure.Expiration.MaxSampleSize,
 		ExpirationMaxRounds:     config.Global.Datastructure.Expiration.MaxSampleRounds,
+		KeyLimit:                config.Global.Memory.KeyLimit,
+		EvictStrategy:           config.Global.Memory.EvictStrategy,
 	})
 
 	aof, err := persistence.OpenAOF(
@@ -52,10 +47,12 @@ func main() {
 		log.Fatalf("Failed to open RDB: %v", err)
 	}
 
-	loadRDBSnapshot(rdb, dataStore)
-	loadAOFCommands(aof, dataStore)
+	ctx := core.NewContext(store, aof)
 
-	valkeyServer := server.New(config.Global.Server.Address, dataStore, aof, rdb)
+	loadRDBSnapshot(rdb, store)
+	loadAOFCommands(aof, ctx)
+
+	valkeyServer := server.New(config.Global.Server.Address, ctx, aof, rdb)
 
 	log.Printf("Starting ValkeyDB on %s", config.Global.Server.Address)
 	if err := valkeyServer.ListenAndServe(); err != nil {
@@ -63,21 +60,20 @@ func main() {
 	}
 }
 
-func loadRDBSnapshot(rdb *persistence.RDB, dataStore *store.Store) {
+func loadRDBSnapshot(rdb *persistence.RDB, store *core.Store) {
 	snapshot, err := rdb.Load(config.Global.Persistence.RDB.Filename)
 	if err != nil {
 		log.Printf("RDB load error: %v", err)
 		return
 	}
-
 	if snapshot == nil {
 		return
 	}
 
 	for key, entry := range snapshot.DictData {
-		dataStore.Dictionary.Set(key, entry.Value, 0)
+		store.Dictionary.Set(key, entry.Value, 0)
 		if !entry.ExpiredAt.IsZero() {
-			dataStore.Dictionary.ExpireAt(key, entry.ExpiredAt)
+			store.Dictionary.ExpireAt(key, entry.ExpiredAt)
 		}
 	}
 
@@ -86,24 +82,24 @@ func loadRDBSnapshot(rdb *persistence.RDB, dataStore *store.Store) {
 			continue
 		}
 		members := make([]string, 0, len(entry.Members))
-		for member := range entry.Members {
-			members = append(members, member)
+		for m := range entry.Members {
+			members = append(members, m)
 		}
-		dataStore.Set.Add(key, members...)
+		store.Set.Add(key, members...)
 		if !entry.ExpiredAt.IsZero() {
-			dataStore.Set.ExpireAt(key, entry.ExpiredAt)
+			store.Set.ExpireAt(key, entry.ExpiredAt)
 		}
 	}
 
 	for key, values := range snapshot.ListData {
 		if len(values) > 0 {
-			dataStore.List.RightPush(key, values...)
+			store.List.RightPush(key, values...)
 		}
 	}
 
 	for key, hash := range snapshot.HashData {
 		for field, value := range hash {
-			dataStore.HashMap.Set(key, field, value)
+			store.HashMap.Set(key, field, value)
 		}
 	}
 
@@ -111,8 +107,8 @@ func loadRDBSnapshot(rdb *persistence.RDB, dataStore *store.Store) {
 		len(snapshot.DictData), len(snapshot.SetData), len(snapshot.ListData), len(snapshot.HashData))
 }
 
-func loadAOFCommands(aof *persistence.AOF, dataStore *store.Store) {
-	aof.Load(config.Global.Persistence.AOF.Filename, func(commandName string, arguments []protocol.Value) {
-		command.Execute(dataStore, commandName, arguments)
+func loadAOFCommands(aof *persistence.AOF, ctx *core.Context) {
+	aof.Load(config.Global.Persistence.AOF.Filename, func(cmd string, args []protocol.Value) {
+		core.Execute(ctx, cmd, args)
 	})
 }
