@@ -1,211 +1,57 @@
 # ValkeyDB
 
-A lightweight, Redis-compatible in-memory database written in Go.
+A high-performance, Redis-compatible in-memory database built from scratch in Go.
 
-## Table of Contents
+## Key Features
 
-- [Overview](#overview)
-- [Features](#features)
-- [Quick Start](#quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-  - [Using with Redis CLI](#using-with-redis-cli)
-- [Supported Commands](#supported-commands)
-  - [Dictionary Commands](#dictionary-commands-string-operations)
-  - [Set Commands](#set-commands)
-  - [Pub/Sub Commands](#pubsub-commands)
-  - [System Commands](#system-commands)
-- [Configuration](#configuration)
-- [Architecture](#architecture)
-  - [Project Structure](#project-structure)
-  - [Key Design Decisions](#key-design-decisions)
-- [Testing](#testing)
-- [Development](#development)
-- [Docker](#docker)
-- [Performance Considerations](#performance-considerations)
-- [TODO](#todo)
+- **RESP Protocol Compliant**: Fully compatible with redis-cli and other Redis clients
+- **Multiple Data Structures**:
+  - Dictionary (String key-value pairs)
+  - Sets (Unique collections)
+  - Lists (Deque semantics)
+  - Hashes (Field-value maps)
+  - Sorted Sets (Score-based ordering using Skip List)
+  - Pub/Sub (Message broadcasting)
+- **Memory Eviction**: Configurable eviction strategies (LRU, LFU, EvictFirst)
+- **Dual Persistence**: AOF and RDB support
+- **TTL Support**: Automatic key expiration
 
-## Overview
-
-ValkeyDB is a high-performance, Redis-compatible in-memory database implementation built from scratch in Go. It implements the RESP (REdis Serialization Protocol) and provides essential data structures with persistence capabilities. This project serves as both a learning resource for understanding database internals and a lightweight alternative for development environments.
-
-## Features
-
-### Core Capabilities
-
-- **RESP Protocol**: Full Redis Serialization Protocol implementation for compatibility with standard Redis clients ([protocol/resp/resp.go](internal/protocol/resp/resp.go))
-- **Multiple Data Structures**: 
-  - Dictionary (String key-value pairs) - [datastructure/dict.go](internal/datastructure/dict.go)
-  - Sets (Unique collections) - [datastructure/set.go](internal/datastructure/set.go)
-  - Lists (Deque semantics; LPUSH, RPUSH, LPOP, RPOP, LRANGE, SORT) - [datastructure/list.go](internal/datastructure/list.go)
-  - Hashes (HSET multi field-value, HGET, HDEL, HGETALL, HEXISTS, HLEN) - [datastructure/hashmap.go](internal/datastructure/hashmap.go)
-  - Pub/Sub (Message broadcasting) - [datastructure/pubsub.go](internal/datastructure/pubsub.go)
-- **Dual Persistence**:
-  - AOF (Append-Only File): Write-ahead logging with automatic rewrite; includes dict, set, list (RPUSH), hash (HSET) - [persistence/aof.go](internal/persistence/aof.go)
-  - RDB (Redis Database): Point-in-time snapshots with background saving; includes dict, set, list, hash - [persistence/rdb.go](internal/persistence/rdb.go)
-- **TTL Support**: Automatic key expiration with both passive and active expiration strategies
-- **Concurrent Access**: Thread-safe operations with efficient read-write locking mechanisms
-- **Configurable**: YAML-based configuration for all server settings - [config.yaml](config.yaml)
-
-## Quick Start
-
-### Prerequisites
-- Go 1.25.1 or higher
-
-### Installation
+## Getting Started
 
 ```bash
-# Clone the repository
 git clone https://github.com/william1nguyen/valkeydb.git
 cd valkeydb
-
-# Build the project
 make build
-
-# Run the server
 make run
 ```
 
-The server will start on `localhost:6379` by default.
-
-### Using with Redis CLI
+Connect with redis-cli:
 
 ```bash
-# Connect using redis-cli
 redis-cli -p 6379
-
-# Try some commands
 127.0.0.1:6379> PING
 PONG
-127.0.0.1:6379> SET mykey "Hello ValkeyDB"
+127.0.0.1:6379> SET mykey "Hello"
 OK
 127.0.0.1:6379> GET mykey
-"Hello ValkeyDB"
+"Hello"
 ```
 
 ## Supported Commands
 
-See [command/registry.go](internal/command/registry.go) for the complete command registry implementation.
+| Category | Commands |
+|----------|----------|
+| String | SET, GET, DEL, TTL, EXPIRE, PING |
+| Sorted Set | ZADD, ZREM, ZSCORE, ZRANK, ZCARD, ZRANGE |
+| Set | SADD, SREM, SCARD, SMEMBERS, SISMEMBER, SEXPIRE, STTL |
+| List | LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE, SORT |
+| Hash | HSET, HGET, HDEL, HGETALL, HEXISTS, HLEN |
+| Pub/Sub | SUBSCRIBE, UNSUBSCRIBE, PUBLISH |
+| System | AUTH, INFO, BGSAVE, KEYS, MONITOR |
 
-### Dictionary Commands (String Operations)
+## Configuration
 
-Implementation: [command/dict_command.go](internal/command/dict_command.go)
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `SET key value [ttl]` | Set a key-value pair with optional TTL | `SET name "John" 60` |
-| `GET key` | Get value by key | `GET name` |
-| `DEL key [key ...]` | Delete one or more keys | `DEL name age` |
-| `EXPIRE key seconds` | Set expiration time | `EXPIRE name 60` |
-| `TTL key` | Get remaining time to live | `TTL name` |
-| `PEXPIREAT key milliseconds` | Set expiration timestamp | `PEXPIREAT name 1735567200000` |
-| `PING [message]` | Test connection | `PING` |
-
-### Set Commands
-
-Implementation: [command/set_command.go](internal/command/set_command.go)
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `SADD key member [member ...]` | Add members to a set | `SADD myset "a" "b" "c"` |
-| `SREM key member [member ...]` | Remove members from a set | `SREM myset "a"` |
-| `SMEMBERS key` | Get all members of a set | `SMEMBERS myset` |
-| `SISMEMBER key member` | Check if member exists | `SISMEMBER myset "a"` |
-| `SCARD key` | Get set cardinality | `SCARD myset` |
-| `SEXPIRE key seconds` | Set expiration for a set | `SEXPIRE myset 60` |
-| `STTL key` | Get TTL for a set | `STTL myset` |
-
-### List Commands
-
-Implementation: [command/list_command.go](internal/command/list_command.go)
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `LPUSH key value [value ...]` | Push values to the head | `LPUSH mylist a b c` |
-| `RPUSH key value [value ...]` | Push values to the tail | `RPUSH mylist a b c` |
-| `LPOP key [count]` | Pop from head | `LPOP mylist 2` |
-| `RPOP key [count]` | Pop from tail | `RPOP mylist 2` |
-| `LRANGE key start stop` | Get a range | `LRANGE mylist 0 -1` |
-| `SORT key [ASC\|DESC] [ALPHA]` | In-place sort list | `SORT mylist ASC` |
-
-### Hash Commands
-
-Implementation: [command/hash_command.go](internal/command/hash_command.go)
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `HSET key field value [field value ...]` | Set one or more field-value pairs; returns count of new fields | `HSET myhash f1 v1 f2 v2` |
-| `HGET key field` | Get value of a field | `HGET myhash f1` |
-| `HDEL key field [field ...]` | Delete fields; returns count removed | `HDEL myhash f1 f2` |
-| `HGETALL key` | Get all field-value pairs | `HGETALL myhash` |
-| `HEXISTS key field` | Check if field exists | `HEXISTS myhash f1` |
-| `HLEN key` | Number of fields | `HLEN myhash` |
-
-### Pub/Sub Commands
-
-Implementation: [command/pubsub_command.go](internal/command/pubsub_command.go)
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `SUBSCRIBE channel` | Subscribe to a channel | `SUBSCRIBE news` |
-| `UNSUBSCRIBE` | Unsubscribe from channel | `UNSUBSCRIBE` |
-| `PUBLISH channel message` | Publish message to channel | `PUBLISH news "Hello"` |
-
-### System Commands
-
-Implementation: [command/system_command.go](internal/command/system_command.go)
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `BGSAVE [filename]` | Background save to RDB | `BGSAVE` |
-| `KEYS pattern` | Find keys matching pattern | `KEYS user:*` |
-| `INFO [section]` | Server statistics. Sections: `server`, `clients`, `memory`, `persistence`, `stats`, `keyspace` | `INFO`, `INFO memory` |
-| `MONITOR` | Stream all commands in real time until the connection closes | `MONITOR` |
-
-#### Monitoring and INFO
-
-INFO returns newline-separated `key:value` lines per section.
-
-Examples:
-
-```bash
-127.0.0.1:6379> INFO memory
-used_memory:123456
-
-127.0.0.1:6379> INFO
-uptime_in_seconds:42
-connected_clients:1
-total_connections_received:3
-used_memory:123456
-aof_enabled:1
-rdb_enabled:1
-bgsave_in_progress:0
-total_commands_processed:10
-db0:dict=2,set=1,list=0,hash=0
-```
-
-MONITOR streams commands as they arrive:
-
-```bash
-127.0.0.1:6379> MONITOR
-OK
-SET a 1
-GET a
-PUBLISH news hello
-```
-
-### Authentication
-
-Optional per-connection gate requiring clients to authenticate before most commands.
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `AUTH password` | Authenticate the connection | `AUTH secretpassword` |
-
-- Allowed before auth: `AUTH`, `PING`, `QUIT`.
-- If no password is configured, auth is disabled.
-
-Enable in `config.yaml`:
+Edit `config.yaml`:
 
 ```yaml
 server:
@@ -213,161 +59,71 @@ server:
   read_timeout: 300
   write_timeout: 300
   auth: secretpassword
-```
-
-Example:
-
-```bash
-redis-cli -p 6379
-AUTH secretpassword
-OK
-SET a 1
-GET a
-```
-
-## Configuration
-
-Edit `config.yaml` to customize server behavior:
-
-```yaml
-server:
-  addr: ":6379"              # Server listen address
-  read_timeout: 300          # Connection read timeout (seconds)
-  write_timeout: 300         # Connection write timeout (seconds)
 
 persistence:
   aof:
-    enabled: true            # Enable AOF persistence
+    enabled: true
     filename: "appendonly.aof"
-    rewrite_interval: 60     # AOF rewrite interval (seconds)
-  
+    rewrite_interval: 60
   rdb:
-    enabled: true            # Enable RDB snapshots
+    enabled: true
     filename: "dump.rdb"
 
 datastructure:
   expiration:
-    max_sample_size: 20      # Keys to sample per expiration round
-    max_sample_rounds: 3     # Max sampling rounds per cycle
-    check_interval: 1        # Expiration check interval (seconds)
+    max_sample_size: 20
+    max_sample_rounds: 3
+    check_interval: 1
+
+memory:
+  key_limit: 5000000     # not set is unlimited
+  evict_strategy: "lru"  # lru, lfu, evict_first
 
 logging:
-  level: "info"              # Log level: debug, info, warn, error
-  verbose_persistence: true  # Verbose persistence logging
+  level: "info"
+  verbose_persistence: true
 ```
+
+### Memory Eviction
+
+When `key_limit` is exceeded, keys are evicted based on `evict_strategy`:
+
+| Strategy | Behavior |
+|----------|----------|
+| `lru` | Evict least recently accessed key |
+| `lfu` | Evict key with lowest access frequency |
+| `evict_first` | Evict earliest inserted key |
 
 ## Architecture
 
-### Project Structure
-
 ```
 valkeydb/
-├── cmd/valkeydb/          # Application entry point
-├── internal/
-│   ├── command/           # Command handlers (dict, set, list, hash, pubsub, system)
-│   ├── config/            # Configuration management
-│   ├── datastructure/     # Core data structures (Dict, Set, List, Hash, Pubsub)
-│   ├── persistence/       # Persistence layer (AOF, RDB)
-│   ├── protocol/resp/     # RESP protocol implementation
-│   └── server/            # TCP server and connection handling
-├── config.yaml            # Configuration file
-└── Makefile              # Build automation
-```
-
-### Key Design Decisions
-
-- **Concurrent Safety**: All data structures use `sync.RWMutex` for thread-safe operations
-- **Expiration Strategy**: Hybrid approach with passive (on-access) and active (periodic sampling) expiration
-- **Persistence**: Dual persistence with AOF for durability and RDB for fast restarts
-- **Protocol**: Full RESP implementation for compatibility with existing Redis clients
-
-## Testing
-
-```bash
-# Run all tests
-make test
-
-# Run tests with verbose output
-make test-v
-
-# Run tests with coverage
-make test-cover
-```
-
-## Development
-
-```bash
-# Build binary
-make build
-
-# Run server
-make run
-
-# Clean build artifacts and data files
-make clean
+├── cmd/valkeydb/          # Entry point
+├── core/
+│   ├── storage/           # Pure data structures
+│   └── store/             # Store interface
+├── command/               # Self-registering commands
+├── protocol/              # RESP protocol
+├── persistence/           # AOF/RDB
+├── server/                # TCP server
+└── config/                # Configuration
 ```
 
 ## Docker
 
 ```bash
-# Build
 docker build -t valkeydb:latest .
-
-# Run with default config
 docker run --rm -p 6379:6379 valkeydb:latest
-
-# Run with custom config
-docker run --rm -p 6379:6379 \
-  -v $(pwd)/config.yaml:/config.yaml:ro \
-  valkeydb:latest
-
-# Persist data files (AOF/RDB) to host
-docker run --rm -p 6379:6379 \
-  -v $(pwd)/data:/data \
-  -v $(pwd)/config.yaml:/config.yaml:ro \
-  valkeydb:latest
-
-# Multi-arch build
-docker buildx build --platform linux/amd64,linux/arm64 -t valkeydb:latest .
 ```
-
-## Performance Considerations
-
-- **Active Expiration**: Configurable sampling to balance CPU usage and memory
-- **AOF Rewrite**: Automatic compaction to prevent unbounded file growth
-- **Lock Granularity**: Read-write locks minimize contention for read-heavy workloads
-- **Connection Pooling**: Each client connection runs in its own goroutine
 
 ## TODO
 
-- [x] RESP protocol encoder/decoder
-- [x] TCP server with concurrent connection handling
-- [x] Dictionary data structure with TTL support
-- [x] Set data structure with TTL support
-- [x] Pub/Sub messaging system
-- [x] AOF persistence with automatic rewrite
-- [x] RDB snapshot persistence with background saving
-- [x] Active and passive key expiration
-- [x] Configuration management via YAML
-- [x] Command registry and handler system
-- [x] Connection timeouts
-- [x] Pattern-based key matching (KEYS command)
-- [x] Comprehensive test coverage
-- [x] List data structure (LPUSH, RPUSH, LPOP, RPOP, LRANGE, SORT)
-- [x] Hash data structure (HSET multi-field, HGET, HDEL, HGETALL, HEXISTS, HLEN)
-- [ ] Sorted sets with scores (ZADD, ZRANGE, ZRANK)
-- [ ] Transaction support (MULTI/EXEC/DISCARD)
-- [x] Authentication (AUTH command)
-- [ ] Pipelining for batch command execution
-- [x] Monitoring and INFO command for server statistics
-- [ ] Replication (master-slave)
-- [ ] Memory management with LRU/LFU eviction policies
-- [ ] Cluster mode with distributed sharding
-- [ ] Lua scripting support (EVAL/EVALSHA)
-- [ ] Slow log for tracking slow commands
-- [ ] Prometheus metrics export
-- [x] Docker support and containerization
-- [ ] HTTP API alongside RESP protocol
-- [ ] Benchmark suite for performance testing
-- [ ] Admin dashboard (web UI)
-- [ ] Geospatial indexing (GEOADD, GEORADIUS)
+- [x] RESP protocol
+- [x] Dictionary, Set, List, Hash
+- [x] Sorted Sets (ZADD, ZRANGE, ZRANK)
+- [x] AOF and RDB persistence
+- [x] TTL and key expiration
+- [x] Memory eviction (LRU/LFU)
+- [ ] Transaction support (MULTI/EXEC)
+- [ ] Replication
+- [ ] Cluster mode
