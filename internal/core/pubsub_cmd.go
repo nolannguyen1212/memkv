@@ -16,14 +16,14 @@ func init() {
 	Register("PUBLISH", handlePublish)
 }
 
-func handleSubscribe(ctx *Context, args []protocol.Value) protocol.Value {
+func handleSubscribe(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("subscribe")
 	}
 
 	channelName := args[0].String
 	activeChannelName = channelName
-	activeChannel = ctx.Store.PubSub.Subscribe(channelName)
+	activeChannel = cctx.Store.PubSub.Subscribe(channelName)
 
 	return ArrayResponse([]protocol.Value{
 		StringResponse("subscribe"),
@@ -32,13 +32,13 @@ func handleSubscribe(ctx *Context, args []protocol.Value) protocol.Value {
 	})
 }
 
-func handleUnsubscribe(ctx *Context, args []protocol.Value) protocol.Value {
+func handleUnsubscribe(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if activeChannel == nil {
 		return ErrorResponse("ERR not subscribed")
 	}
 
 	channelName := activeChannelName
-	ctx.Store.PubSub.Unsubscribe(channelName, activeChannel)
+	cctx.Store.PubSub.Unsubscribe(channelName, activeChannel)
 	activeChannel = nil
 	activeChannelName = ""
 
@@ -49,12 +49,12 @@ func handleUnsubscribe(ctx *Context, args []protocol.Value) protocol.Value {
 	})
 }
 
-func handlePublish(ctx *Context, args []protocol.Value) protocol.Value {
+func handlePublish(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
 		return WrongArgCountError("publish")
 	}
 
-	count := ctx.Store.PubSub.Publish(args[0].String, args[1].String)
+	count := cctx.Store.PubSub.Publish(args[0].String, args[1].String)
 	return IntegerResponse(int64(count))
 }
 

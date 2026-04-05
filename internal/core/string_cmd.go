@@ -17,7 +17,7 @@ func init() {
 	Register("PING", handlePing)
 }
 
-func handleSet(ctx *Context, args []protocol.Value) protocol.Value {
+func handleSet(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 2 {
 		return WrongArgCountError("set")
 	}
@@ -32,32 +32,32 @@ func handleSet(ctx *Context, args []protocol.Value) protocol.Value {
 		}
 	}
 
-	ctx.Store.Dictionary.Set(key, value, ttl)
-	ctx.OnKeyWrite(key)
-	ctx.AppendAOF(BuildBulkArray("SET", key, value))
+	cctx.Store.Dictionary.Set(key, value, ttl)
+	cctx.OnKeyWrite(key)
+	cctx.AppendAOF(BuildBulkArray("SET", key, value))
 
 	if ttl > 0 {
 		expAt := time.Now().Add(ttl)
-		ctx.AppendAOF(BuildBulkArray("PEXPIREAT", key, strconv.FormatInt(expAt.UnixMilli(), 10)))
+		cctx.AppendAOF(BuildBulkArray("PEXPIREAT", key, strconv.FormatInt(expAt.UnixMilli(), 10)))
 	}
 
 	return OKResponse()
 }
 
-func handleGet(ctx *Context, args []protocol.Value) protocol.Value {
+func handleGet(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 {
 		return WrongArgCountError("get")
 	}
 
-	ctx.OnKeyRead(args[0].String)
-	value, exists := ctx.Store.Dictionary.Get(args[0].String)
+	cctx.OnKeyRead(args[0].String)
+	value, exists := cctx.Store.Dictionary.Get(args[0].String)
 	if !exists {
 		return NullStringResponse()
 	}
 	return StringResponse(value)
 }
 
-func handleDel(ctx *Context, args []protocol.Value) protocol.Value {
+func handleDel(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 {
 		return WrongArgCountError("del")
 	}
@@ -67,16 +67,16 @@ func handleDel(ctx *Context, args []protocol.Value) protocol.Value {
 		keys[i] = a.String
 	}
 
-	count := ctx.Store.Dictionary.Delete(keys...)
+	count := cctx.Store.Dictionary.Delete(keys...)
 	for _, k := range keys {
-		ctx.OnKeyDelete(k)
+		cctx.OnKeyDelete(k)
 	}
-	ctx.AppendAOF(BuildBulkArray(append([]string{"DEL"}, keys...)...))
+	cctx.AppendAOF(BuildBulkArray(append([]string{"DEL"}, keys...)...))
 
 	return IntegerResponse(int64(count))
 }
 
-func handleExpire(ctx *Context, args []protocol.Value) protocol.Value {
+func handleExpire(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
 		return WrongArgCountError("expire")
 	}
@@ -88,17 +88,17 @@ func handleExpire(ctx *Context, args []protocol.Value) protocol.Value {
 	}
 
 	ttl := time.Duration(secs) * time.Second
-	if !ctx.Store.Dictionary.Expire(key, ttl) {
+	if !cctx.Store.Dictionary.Expire(key, ttl) {
 		return IntegerResponse(0)
 	}
 
 	expAt := time.Now().Add(ttl)
-	ctx.AppendAOF(BuildBulkArray("PEXPIREAT", key, strconv.FormatInt(expAt.UnixMilli(), 10)))
+	cctx.AppendAOF(BuildBulkArray("PEXPIREAT", key, strconv.FormatInt(expAt.UnixMilli(), 10)))
 
 	return IntegerResponse(1)
 }
 
-func handlePExpireAt(ctx *Context, args []protocol.Value) protocol.Value {
+func handlePExpireAt(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
 		return WrongArgCountError("pexpireat")
 	}
@@ -109,22 +109,22 @@ func handlePExpireAt(ctx *Context, args []protocol.Value) protocol.Value {
 		return ErrorResponse("ERR invalid expire time")
 	}
 
-	if !ctx.Store.Dictionary.ExpireAt(key, time.UnixMilli(ms)) {
+	if !cctx.Store.Dictionary.ExpireAt(key, time.UnixMilli(ms)) {
 		return IntegerResponse(0)
 	}
 	return IntegerResponse(1)
 }
 
-func handleTTL(ctx *Context, args []protocol.Value) protocol.Value {
+func handleTTL(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("ttl")
 	}
 
-	ctx.OnKeyRead(args[0].String)
-	return IntegerResponse(ctx.Store.Dictionary.TTL(args[0].String))
+	cctx.OnKeyRead(args[0].String)
+	return IntegerResponse(cctx.Store.Dictionary.TTL(args[0].String))
 }
 
-func handlePing(ctx *Context, args []protocol.Value) protocol.Value {
+func handlePing(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) == 0 {
 		return PongResponse()
 	}

@@ -108,7 +108,8 @@ func loadRDBSnapshot(rdb *persistence.RDB, store *core.Store) {
 }
 
 func loadAOFCommands(aof *persistence.AOF, ctx *core.Context) {
+	cctx := core.NewConnContext(ctx)
 	aof.Load(config.Global.Persistence.AOF.Filename, func(cmd string, args []protocol.Value) {
-		core.Execute(ctx, cmd, args)
+		core.Execute(cctx, cmd, args)
 	})
 }

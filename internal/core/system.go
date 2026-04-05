@@ -44,7 +44,7 @@ func ConfigureSystem(auth string, aof, rdb bool) {
 	rdbEnabled = rdb
 }
 
-func handleAuth(ctx *Context, args []protocol.Value) protocol.Value {
+func handleAuth(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("auth")
 	}
@@ -54,15 +54,15 @@ func handleAuth(ctx *Context, args []protocol.Value) protocol.Value {
 	return OKResponse()
 }
 
-func handleInfo(ctx *Context, args []protocol.Value) protocol.Value {
+func handleInfo(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	section := "all"
 	if len(args) > 0 {
 		section = strings.ToLower(args[0].String)
 	}
-	return StringResponse(buildInfo(ctx, section))
+	return StringResponse(buildInfo(cctx, section))
 }
 
-func buildInfo(ctx *Context, section string) string {
+func buildInfo(cctx *ConnContext, section string) string {
 	var b strings.Builder
 	uptime := int(time.Since(serverStartTime).Seconds())
 	var mem runtime.MemStats
@@ -91,10 +91,10 @@ func buildInfo(ctx *Context, section string) string {
 	})
 	add("stats", []string{"total_commands_processed:" + strconv.FormatUint(GetTotalCommands(), 10)})
 
-	dictCount := len(ctx.Store.Dictionary.Snapshot())
-	setCount := len(ctx.Store.Set.Snapshot())
-	listCount := len(ctx.Store.List.Snapshot())
-	hashCount := len(ctx.Store.HashMap.Snapshot())
+	dictCount := len(cctx.Store.Dictionary.Snapshot())
+	setCount := len(cctx.Store.Set.Snapshot())
+	listCount := len(cctx.Store.List.Snapshot())
+	hashCount := len(cctx.Store.HashMap.Snapshot())
 
 	add("keyspace", []string{
 		fmt.Sprintf("db0:dict=%d,set=%d,list=%d,hash=%d", dictCount, setCount, listCount, hashCount),
@@ -103,7 +103,7 @@ func buildInfo(ctx *Context, section string) string {
 	return b.String()
 }
 
-func handleBgsave(ctx *Context, args []protocol.Value) protocol.Value {
+func handleBgsave(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	go func() {
 		atomic.StoreInt32(&backgroundSaveInProgress, 1)
 		defer atomic.StoreInt32(&backgroundSaveInProgress, 0)
@@ -111,7 +111,7 @@ func handleBgsave(ctx *Context, args []protocol.Value) protocol.Value {
 	return protocol.Value{Type: protocol.TypeSimpleString, String: "Background saving started"}
 }
 
-func handleKeys(ctx *Context, args []protocol.Value) protocol.Value {
+func handleKeys(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 {
 		return WrongArgCountError("keys")
 	}
@@ -119,22 +119,22 @@ func handleKeys(ctx *Context, args []protocol.Value) protocol.Value {
 	pattern := args[0].String
 	var keys []string
 
-	for k := range ctx.Store.Dictionary.Snapshot() {
+	for k := range cctx.Store.Dictionary.Snapshot() {
 		if matched, _ := filepath.Match(pattern, k); matched {
 			keys = append(keys, k)
 		}
 	}
-	for k := range ctx.Store.Set.Snapshot() {
+	for k := range cctx.Store.Set.Snapshot() {
 		if matched, _ := filepath.Match(pattern, k); matched {
 			keys = append(keys, k)
 		}
 	}
-	for k := range ctx.Store.List.Snapshot() {
+	for k := range cctx.Store.List.Snapshot() {
 		if matched, _ := filepath.Match(pattern, k); matched {
 			keys = append(keys, k)
 		}
 	}
-	for k := range ctx.Store.HashMap.Snapshot() {
+	for k := range cctx.Store.HashMap.Snapshot() {
 		if matched, _ := filepath.Match(pattern, k); matched {
 			keys = append(keys, k)
 		}
@@ -143,7 +143,7 @@ func handleKeys(ctx *Context, args []protocol.Value) protocol.Value {
 	return stringsToArray(keys)
 }
 
-func handleMonitor(ctx *Context, args []protocol.Value) protocol.Value {
+func handleMonitor(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	return OKResponse()
 }
 

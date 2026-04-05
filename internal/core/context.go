@@ -7,7 +7,7 @@ import (
 	"github.com/william1nguyen/valkeydb/internal/protocol"
 )
 
-type Handler func(ctx *Context, args []protocol.Value) protocol.Value
+type Handler func(cctx *ConnContext, args []protocol.Value) protocol.Value
 
 type AOFAppender interface {
 	Append(value protocol.Value) error
@@ -63,7 +63,7 @@ func Lookup(name string) (Handler, bool) {
 	return h, ok
 }
 
-func Execute(ctx *Context, name string, args []protocol.Value) protocol.Value {
+func Execute(ctx *ConnContext, name string, args []protocol.Value) protocol.Value {
 	handler, exists := Lookup(name)
 	if !exists {
 		return ErrorResponse("ERR unknown command '" + name + "'")

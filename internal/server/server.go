@@ -158,6 +158,8 @@ func (s *Server) closePersistence() {
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
+	cctx := core.NewConnContext(s.ctx)
+
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 	authenticated := config.Global.Server.Auth == ""
@@ -173,13 +175,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 		cmdName := s.extractCommandName(request)
 
 		if !authenticated {
-			if s.handleUnauthenticated(conn, writer, request, cmdName, &authenticated) {
+			if s.handleUnauthenticated(conn, writer, request, cmdName, &authenticated, cctx) {
 				continue
 			}
 		}
 
 		core.MonitorPublish(cmdName, request.Array[1:])
-		response := core.Execute(s.ctx, cmdName, request.Array[1:])
+		response := core.Execute(cctx, cmdName, request.Array[1:])
 		core.IncCommands()
 
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.WriteTimeout()))
@@ -206,10 +208,10 @@ func (s *Server) extractCommandName(request protocol.Value) string {
 	return ""
 }
 
-func (s *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer, request protocol.Value, cmdName string, authenticated *bool) bool {
+func (s *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer, request protocol.Value, cmdName string, authenticated *bool, cctx *core.ConnContext) bool {
 	switch cmdName {
 	case "AUTH":
-		response := core.Execute(s.ctx, cmdName, request.Array[1:])
+		response := core.Execute(cctx, cmdName, request.Array[1:])
 		if response.Type == protocol.TypeSimpleString && response.String == "OK" {
 			*authenticated = true
 		}
