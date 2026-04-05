@@ -41,6 +41,9 @@ func (dict *Dictionary) Set(key, value string, ttl time.Duration) {
 	defer dict.mutex.Unlock()
 
 	entry := Entry{Value: value}
+	if prev, exists := dict.entries[key]; exists {
+		entry.Version = prev.Version + 1
+	}
 	if ttl > 0 {
 		entry.ExpiredAt = time.Now().Add(ttl)
 	}
@@ -189,4 +192,10 @@ func (dict *Dictionary) expireKeys() {
 			return
 		}
 	}
+}
+
+func (dict *Dictionary) Version(key string) uint64 {
+	dict.mutex.RLock()
+	defer dict.mutex.RUnlock()
+	return dict.entries[key].Version
 }

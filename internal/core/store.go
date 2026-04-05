@@ -2,6 +2,7 @@ package core
 
 import (
 	"log"
+	"sync"
 	"time"
 
 	"github.com/william1nguyen/valkeydb/internal/datastructure"
@@ -15,6 +16,7 @@ type Store struct {
 	SortedList *datastructure.SortedList
 	PubSub     *datastructure.PubSub
 	Eviction   *datastructure.EvictionManager
+	ExecMu     sync.Mutex
 }
 
 type StoreConfig struct {

@@ -63,6 +63,9 @@ func handleLpop(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	}
 
 	values := cctx.Store.List.LeftPop(key, count)
+	if len(values) > 0 {
+		cctx.OnKeyMutate(key)
+	}
 	return stringsToArray(values)
 }
 
@@ -82,6 +85,9 @@ func handleRpop(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	}
 
 	values := cctx.Store.List.RightPop(key, count)
+	if len(values) > 0 {
+		cctx.OnKeyMutate(key)
+	}
 	return stringsToArray(values)
 }
 

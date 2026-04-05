@@ -48,6 +48,7 @@ func handleZrem(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	members := extractStrings(args[1:])
 	count := cctx.Store.SortedList.Remove(key, members...)
 
+	cctx.OnKeyMutate(key)
 	return IntegerResponse(int64(count))
 }
 

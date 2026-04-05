@@ -48,6 +48,7 @@ func handleHdel(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	fields := extractStrings(args[1:])
 	count := cctx.Store.HashMap.Delete(key, fields...)
 
+	cctx.OnKeyMutate(key)
 	cctx.AppendAOF(BuildBulkArray(append([]string{"HDEL", key}, fields...)...))
 
 	return IntegerResponse(int64(count))

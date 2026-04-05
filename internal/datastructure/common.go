@@ -10,6 +10,7 @@ const (
 type Entry struct {
 	Value     string
 	ExpiredAt time.Time
+	Version   uint64
 }
 
 type SetEntry struct {

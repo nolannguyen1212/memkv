@@ -22,7 +22,12 @@ func NewContext(store *Store, aof AOFAppender) *Context {
 	return &Context{Store: store, AOF: aof}
 }
 
+func (ctx *Context) OnKeyMutate(key string) {
+	globalWatch.Notify(key)
+}
+
 func (ctx *Context) OnKeyWrite(key string) {
+	ctx.OnKeyMutate(key)
 	ctx.Store.Eviction.RecordInsert(key)
 	for ctx.Store.Eviction.ShouldEvict() {
 		if ctx.Store.Eviction.EvictOne() == "" {
@@ -36,6 +41,7 @@ func (ctx *Context) OnKeyRead(key string) {
 }
 
 func (ctx *Context) OnKeyDelete(key string) {
+	ctx.OnKeyMutate(key)
 	ctx.Store.Eviction.RecordDelete(key)
 }
 
@@ -63,10 +69,23 @@ func Lookup(name string) (Handler, bool) {
 	return h, ok
 }
 
-func Execute(ctx *ConnContext, name string, args []protocol.Value) protocol.Value {
+var txPassthrough = map[string]bool{
+	"MULTI":   true,
+	"EXEC":    true,
+	"DISCARD": true,
+	"WATCH":   true,
+	"UNWATCH": true,
+	"QUIT":    true,
+}
+
+func Execute(cctx *ConnContext, name string, args []protocol.Value) protocol.Value {
+	if cctx.TX.Status == TxQueueing && !txPassthrough[name] {
+		cctx.TX.Enqueue(name, args)
+		return protocol.Value{Type: protocol.TypeSimpleString, String: "QUEUED"}
+	}
 	handler, exists := Lookup(name)
 	if !exists {
 		return ErrorResponse("ERR unknown command '" + name + "'")
 	}
-	return handler(ctx, args)
+	return handler(cctx, args)
 }

@@ -159,6 +159,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	cctx := core.NewConnContext(s.ctx)
+	defer core.UnwatchConn(cctx.ID)
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)

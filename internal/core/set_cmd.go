@@ -41,6 +41,7 @@ func handleSrem(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	members := extractStrings(args[1:])
 	count := cctx.Store.Set.Remove(key, members...)
 
+	cctx.OnKeyMutate(key)
 	cctx.AppendAOF(BuildBulkArray(append([]string{"SREM", key}, members...)...))
 
 	return IntegerResponse(int64(count))
