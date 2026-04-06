@@ -34,9 +34,9 @@ func (set *Set) Add(key string, members ...string) int {
 	}
 
 	added := 0
-	for _, m := range members {
-		if _, ok := entry.Members[m]; !ok {
-			entry.Members[m] = struct{}{}
+	for _, member := range members {
+		if _, ok := entry.Members[member]; !ok {
+			entry.Members[member] = struct{}{}
 			added++
 		}
 	}
@@ -54,9 +54,9 @@ func (set *Set) Remove(key string, members ...string) int {
 	}
 
 	removed := 0
-	for _, m := range members {
-		if _, ok := entry.Members[m]; ok {
-			delete(entry.Members, m)
+	for _, member := range members {
+		if _, ok := entry.Members[member]; ok {
+			delete(entry.Members, member)
 			removed++
 		}
 	}
@@ -82,8 +82,8 @@ func (set *Set) Members(key string) ([]string, bool) {
 	}
 
 	members := make([]string, 0, len(entry.Members))
-	for m := range entry.Members {
-		members = append(members, m)
+	for member := range entry.Members {
+		members = append(members, member)
 	}
 	return members, true
 }
@@ -170,8 +170,8 @@ func (set *Set) Snapshot() map[string]SetEntry {
 			continue
 		}
 		membersCopy := make(map[string]struct{}, len(entry.Members))
-		for m := range entry.Members {
-			membersCopy[m] = struct{}{}
+		for member := range entry.Members {
+			membersCopy[member] = struct{}{}
 		}
 		snapshot[key] = SetEntry{Members: membersCopy, ExpiredAt: entry.ExpiredAt}
 	}

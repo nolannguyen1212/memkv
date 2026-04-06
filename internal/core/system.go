@@ -44,7 +44,7 @@ func ConfigureSystem(auth string, aof, rdb bool) {
 	rdbEnabled = rdb
 }
 
-func handleAuth(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleAuth(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("auth")
 	}
@@ -54,56 +54,56 @@ func handleAuth(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	return OKResponse()
 }
 
-func handleInfo(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleInfo(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	section := "all"
 	if len(args) > 0 {
 		section = strings.ToLower(args[0].String)
 	}
-	return StringResponse(buildInfo(cctx, section))
+	return StringResponse(buildInfo(connContext, section))
 }
 
-func buildInfo(cctx *ConnContext, section string) string {
-	var b strings.Builder
+func buildInfo(connContext *ConnContext, section string) string {
+	var builder strings.Builder
 	uptime := int(time.Since(serverStartTime).Seconds())
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
 
-	add := func(name string, lines []string) {
+	addSection := func(name string, lines []string) {
 		if section != "all" && section != name {
 			return
 		}
-		for _, l := range lines {
-			b.WriteString(l)
-			b.WriteString("\n")
+		for _, line := range lines {
+			builder.WriteString(line)
+			builder.WriteString("\n")
 		}
 	}
 
-	add("server", []string{"uptime_in_seconds:" + strconv.Itoa(uptime)})
-	add("clients", []string{
+	addSection("server", []string{"uptime_in_seconds:" + strconv.Itoa(uptime)})
+	addSection("clients", []string{
 		"connected_clients:" + strconv.Itoa(int(GetCurrentConnections())),
 		"total_connections_received:" + strconv.FormatUint(GetTotalConnections(), 10),
 	})
-	add("memory", []string{"used_memory:" + strconv.FormatUint(mem.Alloc, 10)})
-	add("persistence", []string{
+	addSection("memory", []string{"used_memory:" + strconv.FormatUint(memStats.Alloc, 10)})
+	addSection("persistence", []string{
 		"aof_enabled:" + boolStr(aofEnabled),
 		"rdb_enabled:" + boolStr(rdbEnabled),
 		"bgsave_in_progress:" + strconv.Itoa(int(atomic.LoadInt32(&backgroundSaveInProgress))),
 	})
-	add("stats", []string{"total_commands_processed:" + strconv.FormatUint(GetTotalCommands(), 10)})
+	addSection("stats", []string{"total_commands_processed:" + strconv.FormatUint(GetTotalCommands(), 10)})
 
-	dictCount := len(cctx.Store.Dictionary.Snapshot())
-	setCount := len(cctx.Store.Set.Snapshot())
-	listCount := len(cctx.Store.List.Snapshot())
-	hashCount := len(cctx.Store.HashMap.Snapshot())
+	dictCount := len(connContext.Store.Dictionary.Snapshot())
+	setCount := len(connContext.Store.Set.Snapshot())
+	listCount := len(connContext.Store.List.Snapshot())
+	hashCount := len(connContext.Store.HashMap.Snapshot())
 
-	add("keyspace", []string{
+	addSection("keyspace", []string{
 		fmt.Sprintf("db0:dict=%d,set=%d,list=%d,hash=%d", dictCount, setCount, listCount, hashCount),
 	})
 
-	return b.String()
+	return builder.String()
 }
 
-func handleBgsave(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleBgsave(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	go func() {
 		atomic.StoreInt32(&backgroundSaveInProgress, 1)
 		defer atomic.StoreInt32(&backgroundSaveInProgress, 0)
@@ -111,7 +111,7 @@ func handleBgsave(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	return protocol.Value{Type: protocol.TypeSimpleString, String: "Background saving started"}
 }
 
-func handleKeys(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleKeys(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 {
 		return WrongArgCountError("keys")
 	}
@@ -119,31 +119,31 @@ func handleKeys(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	pattern := args[0].String
 	var keys []string
 
-	for k := range cctx.Store.Dictionary.Snapshot() {
-		if matched, _ := filepath.Match(pattern, k); matched {
-			keys = append(keys, k)
+	for key := range connContext.Store.Dictionary.Snapshot() {
+		if matched, _ := filepath.Match(pattern, key); matched {
+			keys = append(keys, key)
 		}
 	}
-	for k := range cctx.Store.Set.Snapshot() {
-		if matched, _ := filepath.Match(pattern, k); matched {
-			keys = append(keys, k)
+	for key := range connContext.Store.Set.Snapshot() {
+		if matched, _ := filepath.Match(pattern, key); matched {
+			keys = append(keys, key)
 		}
 	}
-	for k := range cctx.Store.List.Snapshot() {
-		if matched, _ := filepath.Match(pattern, k); matched {
-			keys = append(keys, k)
+	for key := range connContext.Store.List.Snapshot() {
+		if matched, _ := filepath.Match(pattern, key); matched {
+			keys = append(keys, key)
 		}
 	}
-	for k := range cctx.Store.HashMap.Snapshot() {
-		if matched, _ := filepath.Match(pattern, k); matched {
-			keys = append(keys, k)
+	for key := range connContext.Store.HashMap.Snapshot() {
+		if matched, _ := filepath.Match(pattern, key); matched {
+			keys = append(keys, key)
 		}
 	}
 
 	return stringsToArray(keys)
 }
 
-func handleMonitor(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleMonitor(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	return OKResponse()
 }
 
@@ -194,17 +194,17 @@ func DecConnections() {
 }
 
 func MonitorSubscribe() chan protocol.Value {
-	ch := make(chan protocol.Value, monitorBuffer)
+	monitorChannel := make(chan protocol.Value, monitorBuffer)
 	monitorMutex.Lock()
-	monitorSubs[ch] = struct{}{}
+	monitorSubs[monitorChannel] = struct{}{}
 	monitorMutex.Unlock()
-	return ch
+	return monitorChannel
 }
 
-func MonitorUnsubscribe(ch chan protocol.Value) {
+func MonitorUnsubscribe(monitorChannel chan protocol.Value) {
 	monitorMutex.Lock()
-	delete(monitorSubs, ch)
-	close(ch)
+	delete(monitorSubs, monitorChannel)
+	close(monitorChannel)
 	monitorMutex.Unlock()
 }
 
@@ -216,17 +216,17 @@ func MonitorPublish(cmd string, args []protocol.Value) {
 		return
 	}
 
-	var b strings.Builder
-	b.WriteString(cmd)
-	for _, a := range args {
-		b.WriteString(" ")
-		b.WriteString(a.String)
+	var builder strings.Builder
+	builder.WriteString(cmd)
+	for _, arg := range args {
+		builder.WriteString(" ")
+		builder.WriteString(arg.String)
 	}
 
-	msg := StringResponse(b.String())
-	for ch := range monitorSubs {
+	message := StringResponse(builder.String())
+	for monitorChannel := range monitorSubs {
 		select {
-		case ch <- msg:
+		case monitorChannel <- message:
 		default:
 		}
 	}

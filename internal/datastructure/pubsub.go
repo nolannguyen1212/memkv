@@ -20,46 +20,46 @@ func NewPubSub() *PubSub {
 	return &PubSub{subscribers: make(map[string][]MessageChannel)}
 }
 
-func (ps *PubSub) Subscribe(channel string) MessageChannel {
-	ps.mutex.Lock()
-	defer ps.mutex.Unlock()
+func (pubSub *PubSub) Subscribe(channel string) MessageChannel {
+	pubSub.mutex.Lock()
+	defer pubSub.mutex.Unlock()
 
-	ch := make(MessageChannel, pubsubBuffer)
-	ps.subscribers[channel] = append(ps.subscribers[channel], ch)
-	return ch
+	messageChannel := make(MessageChannel, pubsubBuffer)
+	pubSub.subscribers[channel] = append(pubSub.subscribers[channel], messageChannel)
+	return messageChannel
 }
 
-func (ps *PubSub) Unsubscribe(channel string, ch MessageChannel) {
-	ps.mutex.Lock()
-	defer ps.mutex.Unlock()
+func (pubSub *PubSub) Unsubscribe(channel string, messageChannel MessageChannel) {
+	pubSub.mutex.Lock()
+	defer pubSub.mutex.Unlock()
 
-	subs := ps.subscribers[channel]
-	for i, sub := range subs {
-		if sub == ch {
-			ps.subscribers[channel] = append(subs[:i], subs[i+1:]...)
-			close(ch)
-			if len(ps.subscribers[channel]) == 0 {
-				delete(ps.subscribers, channel)
+	subscribers := pubSub.subscribers[channel]
+	for i, subscriber := range subscribers {
+		if subscriber == messageChannel {
+			pubSub.subscribers[channel] = append(subscribers[:i], subscribers[i+1:]...)
+			close(messageChannel)
+			if len(pubSub.subscribers[channel]) == 0 {
+				delete(pubSub.subscribers, channel)
 			}
 			return
 		}
 	}
 }
 
-func (ps *PubSub) Publish(channel, content string) int {
-	ps.mutex.RLock()
-	defer ps.mutex.RUnlock()
+func (pubSub *PubSub) Publish(channel, content string) int {
+	pubSub.mutex.RLock()
+	defer pubSub.mutex.RUnlock()
 
-	subs := ps.subscribers[channel]
-	if len(subs) == 0 {
+	subscribers := pubSub.subscribers[channel]
+	if len(subscribers) == 0 {
 		return 0
 	}
 
-	msg := Message{Channel: channel, Content: content}
+	message := Message{Channel: channel, Content: content}
 	delivered := 0
-	for _, ch := range subs {
+	for _, messageChannel := range subscribers {
 		select {
-		case ch <- msg:
+		case messageChannel <- message:
 			delivered++
 		default:
 		}

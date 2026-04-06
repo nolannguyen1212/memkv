@@ -15,7 +15,7 @@ func init() {
 	Register("ZRANGE", handleZrange)
 }
 
-func handleZadd(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleZadd(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 3 || len(args)%2 == 0 {
 		return WrongArgCountError("zadd")
 	}
@@ -32,62 +32,62 @@ func handleZadd(cctx *ConnContext, args []protocol.Value) protocol.Value {
 		scoreMembers = append(scoreMembers, score, member)
 	}
 
-	count := cctx.Store.SortedList.Add(key, scoreMembers...)
+	count := connContext.Store.SortedList.Add(key, scoreMembers...)
 
-	cctx.OnKeyWrite(key)
+	connContext.OnKeyWrite(key)
 
 	return IntegerResponse(int64(count))
 }
 
-func handleZrem(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleZrem(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 2 {
 		return WrongArgCountError("zrem")
 	}
 
 	key := args[0].String
 	members := extractStrings(args[1:])
-	count := cctx.Store.SortedList.Remove(key, members...)
+	count := connContext.Store.SortedList.Remove(key, members...)
 
-	cctx.OnKeyMutate(key)
+	connContext.OnKeyMutate(key)
 	return IntegerResponse(int64(count))
 }
 
-func handleZscore(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleZscore(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
 		return WrongArgCountError("zscore")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	score, exists := cctx.Store.SortedList.Score(args[0].String, args[1].String)
+	connContext.OnKeyRead(args[0].String)
+	score, exists := connContext.Store.SortedList.Score(args[0].String, args[1].String)
 	if !exists {
 		return NullStringResponse()
 	}
 	return StringResponse(strconv.FormatFloat(score, 'f', -1, 64))
 }
 
-func handleZrank(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleZrank(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
 		return WrongArgCountError("zrank")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	rank, exists := cctx.Store.SortedList.Rank(args[0].String, args[1].String)
+	connContext.OnKeyRead(args[0].String)
+	rank, exists := connContext.Store.SortedList.Rank(args[0].String, args[1].String)
 	if !exists {
 		return NullStringResponse()
 	}
 	return IntegerResponse(int64(rank))
 }
 
-func handleZcard(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleZcard(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("zcard")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	return IntegerResponse(int64(cctx.Store.SortedList.Cardinality(args[0].String)))
+	connContext.OnKeyRead(args[0].String)
+	return IntegerResponse(int64(connContext.Store.SortedList.Cardinality(args[0].String)))
 }
 
-func handleZrange(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleZrange(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 3 {
 		return WrongArgCountError("zrange")
 	}
@@ -102,7 +102,7 @@ func handleZrange(cctx *ConnContext, args []protocol.Value) protocol.Value {
 		return NotIntegerError()
 	}
 
-	cctx.OnKeyRead(key)
-	members := cctx.Store.SortedList.Range(key, start, stop)
+	connContext.OnKeyRead(key)
+	members := connContext.Store.SortedList.Range(key, start, stop)
 	return stringsToArray(members)
 }

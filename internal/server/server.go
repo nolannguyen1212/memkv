@@ -36,46 +36,46 @@ func New(address string, ctx *core.Context, aof *persistence.AOF, rdb *persisten
 	}
 }
 
-func (s *Server) ListenAndServe() error {
-	listener, err := net.Listen(networkType, s.address)
+func (server *Server) ListenAndServe() error {
+	listener, err := net.Listen(networkType, server.address)
 	if err != nil {
 		return err
 	}
 
-	s.listener = listener
-	s.shutdownChan = make(chan struct{})
+	server.listener = listener
+	server.shutdownChan = make(chan struct{})
 
-	s.startBackgroundTasks()
-	log.Printf("listening on %s", s.address)
+	server.startBackgroundTasks()
+	log.Printf("listening on %s", server.address)
 
-	return s.acceptConnections()
+	return server.acceptConnections()
 }
 
-func (s *Server) startBackgroundTasks() {
-	s.waitGroup.Add(1)
+func (server *Server) startBackgroundTasks() {
+	server.waitGroup.Add(1)
 	go func() {
-		defer s.waitGroup.Done()
+		defer server.waitGroup.Done()
 		ticker := time.NewTicker(config.Global.AOFRewriteInterval())
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
-				s.rewriteAOF()
-			case <-s.shutdownChan:
+				server.rewriteAOF()
+			case <-server.shutdownChan:
 				return
 			}
 		}
 	}()
 }
 
-func (s *Server) rewriteAOF() {
+func (server *Server) rewriteAOF() {
 	aofFilename := config.Global.Persistence.AOF.Filename
-	err := s.aof.RewriteAll(
-		s.ctx.Store.Dictionary.Snapshot(),
-		s.ctx.Store.Set.Snapshot(),
-		s.ctx.Store.List.Snapshot(),
-		s.ctx.Store.HashMap.Snapshot(),
+	err := server.aof.RewriteAll(
+		server.ctx.Store.Dictionary.Snapshot(),
+		server.ctx.Store.Set.Snapshot(),
+		server.ctx.Store.List.Snapshot(),
+		server.ctx.Store.HashMap.Snapshot(),
 		aofFilename,
 	)
 	if err != nil {
@@ -85,12 +85,12 @@ func (s *Server) rewriteAOF() {
 	log.Printf("aof rewrite done")
 }
 
-func (s *Server) acceptConnections() error {
+func (server *Server) acceptConnections() error {
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := server.listener.Accept()
 		if err != nil {
 			select {
-			case <-s.shutdownChan:
+			case <-server.shutdownChan:
 				return nil
 			default:
 			}
@@ -98,68 +98,68 @@ func (s *Server) acceptConnections() error {
 			continue
 		}
 
-		s.waitGroup.Add(1)
+		server.waitGroup.Add(1)
 		go func() {
-			defer s.waitGroup.Done()
+			defer server.waitGroup.Done()
 			core.IncConnections()
-			s.handleConnection(conn)
+			server.handleConnection(conn)
 			core.DecConnections()
 		}()
 	}
 }
 
-func (s *Server) Close(c context.Context) error {
-	if s.listener != nil {
-		_ = s.listener.Close()
+func (server *Server) Close(shutdownContext context.Context) error {
+	if server.listener != nil {
+		_ = server.listener.Close()
 	}
-	if s.shutdownChan != nil {
-		close(s.shutdownChan)
+	if server.shutdownChan != nil {
+		close(server.shutdownChan)
 	}
 
 	done := make(chan struct{})
 	go func() {
-		s.waitGroup.Wait()
+		server.waitGroup.Wait()
 		close(done)
 	}()
 
 	select {
 	case <-done:
-	case <-c.Done():
+	case <-shutdownContext.Done():
 	}
 
-	s.saveRDBSnapshot()
-	s.closePersistence()
+	server.saveRDBSnapshot()
+	server.closePersistence()
 	return nil
 }
 
-func (s *Server) saveRDBSnapshot() {
-	if s.rdb == nil || !config.Global.Persistence.RDB.Enabled {
+func (server *Server) saveRDBSnapshot() {
+	if server.rdb == nil || !config.Global.Persistence.RDB.Enabled {
 		return
 	}
 
 	snapshot := persistence.Snapshot{
-		DictData: s.ctx.Store.Dictionary.Snapshot(),
-		SetData:  s.ctx.Store.Set.Snapshot(),
-		ListData: s.ctx.Store.List.Snapshot(),
-		HashData: s.ctx.Store.HashMap.Snapshot(),
+		DictData: server.ctx.Store.Dictionary.Snapshot(),
+		SetData:  server.ctx.Store.Set.Snapshot(),
+		ListData: server.ctx.Store.List.Snapshot(),
+		HashData: server.ctx.Store.HashMap.Snapshot(),
 	}
-	_ = s.rdb.Save(snapshot, config.Global.Persistence.RDB.Filename)
+	_ = server.rdb.Save(snapshot, config.Global.Persistence.RDB.Filename)
 }
 
-func (s *Server) closePersistence() {
-	if s.aof != nil {
-		_ = s.aof.Close()
+func (server *Server) closePersistence() {
+	if server.aof != nil {
+		_ = server.aof.Close()
 	}
-	if s.rdb != nil {
-		_ = s.rdb.Close()
+	if server.rdb != nil {
+		_ = server.rdb.Close()
 	}
 }
 
-func (s *Server) handleConnection(conn net.Conn) {
+func (server *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	cctx := core.NewConnContext(s.ctx)
-	defer core.UnwatchConn(cctx.ID)
+	connContext := core.NewConnContext(server.ctx)
+	defer core.UnwatchConn(connContext.ID)
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
@@ -173,51 +173,51 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		cmdName := s.extractCommandName(request)
+		cmdName := server.extractCommandName(request)
 
 		if !authenticated {
-			if s.handleUnauthenticated(conn, writer, request, cmdName, &authenticated, cctx) {
+			if server.handleUnauthenticated(conn, writer, request, cmdName, &authenticated, connContext) {
 				continue
 			}
 		}
 
 		core.MonitorPublish(cmdName, request.Array[1:])
-		response := core.Execute(cctx, cmdName, request.Array[1:])
+		response := core.Execute(connContext, cmdName, request.Array[1:])
 		core.IncCommands()
 
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.WriteTimeout()))
-		if err := s.writeResponse(writer, conn, response); err != nil {
+		if err := server.writeResponse(writer, conn, response); err != nil {
 			return
 		}
 
 		if cmdName == "SUBSCRIBE" {
-			s.enterPubsubMode(conn, writer)
+			server.enterPubsubMode(conn, writer)
 			return
 		}
 
 		if cmdName == "MONITOR" {
-			s.enterMonitorMode(conn, writer)
+			server.enterMonitorMode(conn, writer)
 			return
 		}
 	}
 }
 
-func (s *Server) extractCommandName(request protocol.Value) string {
+func (server *Server) extractCommandName(request protocol.Value) string {
 	if request.Type == protocol.TypeArray && len(request.Array) > 0 {
 		return strings.ToUpper(request.Array[0].String)
 	}
 	return ""
 }
 
-func (s *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer, request protocol.Value, cmdName string, authenticated *bool, cctx *core.ConnContext) bool {
+func (server *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer, request protocol.Value, cmdName string, authenticated *bool, connContext *core.ConnContext) bool {
 	switch cmdName {
 	case "AUTH":
-		response := core.Execute(cctx, cmdName, request.Array[1:])
+		response := core.Execute(connContext, cmdName, request.Array[1:])
 		if response.Type == protocol.TypeSimpleString && response.String == "OK" {
 			*authenticated = true
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.WriteTimeout()))
-		s.writeResponse(writer, conn, response)
+		server.writeResponse(writer, conn, response)
 		return true
 
 	case "PING", "QUIT":
@@ -226,12 +226,12 @@ func (s *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer, requ
 	default:
 		response := protocol.Value{Type: protocol.TypeError, String: "NOAUTH Authentication required."}
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.WriteTimeout()))
-		s.writeResponse(writer, conn, response)
+		server.writeResponse(writer, conn, response)
 		return true
 	}
 }
 
-func (s *Server) enterPubsubMode(conn net.Conn, writer *bufio.Writer) {
+func (server *Server) enterPubsubMode(conn net.Conn, writer *bufio.Writer) {
 	msgChan := core.GetActiveChannel()
 	if msgChan == nil {
 		return
@@ -247,25 +247,25 @@ func (s *Server) enterPubsubMode(conn net.Conn, writer *bufio.Writer) {
 			},
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.WriteTimeout()))
-		if err := s.writeResponse(writer, conn, response); err != nil {
+		if err := server.writeResponse(writer, conn, response); err != nil {
 			return
 		}
 	}
 }
 
-func (s *Server) enterMonitorMode(conn net.Conn, writer *bufio.Writer) {
-	monitorChan := core.MonitorSubscribe()
-	defer core.MonitorUnsubscribe(monitorChan)
+func (server *Server) enterMonitorMode(conn net.Conn, writer *bufio.Writer) {
+	monitorChannel := core.MonitorSubscribe()
+	defer core.MonitorUnsubscribe(monitorChannel)
 
-	for msg := range monitorChan {
+	for message := range monitorChannel {
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.WriteTimeout()))
-		if err := s.writeResponse(writer, conn, msg); err != nil {
+		if err := server.writeResponse(writer, conn, message); err != nil {
 			return
 		}
 	}
 }
 
-func (s *Server) writeResponse(writer *bufio.Writer, conn net.Conn, value protocol.Value) error {
+func (server *Server) writeResponse(writer *bufio.Writer, conn net.Conn, value protocol.Value) error {
 	if _, err := writer.WriteString(protocol.Encode(value)); err != nil {
 		log.Printf("%s write error: %v", conn.RemoteAddr(), err)
 		return err

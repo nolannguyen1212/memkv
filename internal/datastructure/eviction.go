@@ -50,45 +50,45 @@ func NewEvictionManager(config EvictionConfig) *EvictionManager {
 	}
 }
 
-func (em *EvictionManager) IsEnabled() bool {
-	return em.keyLimit != nil && *em.keyLimit > 0 && em.strategy != EvictNone
+func (evictionManager *EvictionManager) IsEnabled() bool {
+	return evictionManager.keyLimit != nil && *evictionManager.keyLimit > 0 && evictionManager.strategy != EvictNone
 }
 
-func (em *EvictionManager) RecordInsert(key string) {
-	if em.keyLimit == nil {
+func (evictionManager *EvictionManager) RecordInsert(key string) {
+	if evictionManager.keyLimit == nil {
 		return
 	}
 
-	em.mutex.Lock()
-	defer em.mutex.Unlock()
+	evictionManager.mutex.Lock()
+	defer evictionManager.mutex.Unlock()
 
-	if _, exists := em.metadata[key]; exists {
+	if _, exists := evictionManager.metadata[key]; exists {
 		return
 	}
 
-	em.insertOrder++
-	em.metadata[key] = &keyMeta{
+	evictionManager.insertOrder++
+	evictionManager.metadata[key] = &keyMeta{
 		key:         key,
 		accessTime:  time.Now(),
 		accessCount: 1,
-		insertOrder: em.insertOrder,
+		insertOrder: evictionManager.insertOrder,
 	}
 
-	if em.strategy == EvictLRU {
-		elem := em.lruList.PushFront(key)
-		em.lruElements[key] = elem
+	if evictionManager.strategy == EvictLRU {
+		element := evictionManager.lruList.PushFront(key)
+		evictionManager.lruElements[key] = element
 	}
 }
 
-func (em *EvictionManager) RecordAccess(key string) {
-	if em.keyLimit == nil {
+func (evictionManager *EvictionManager) RecordAccess(key string) {
+	if evictionManager.keyLimit == nil {
 		return
 	}
 
-	em.mutex.Lock()
-	defer em.mutex.Unlock()
+	evictionManager.mutex.Lock()
+	defer evictionManager.mutex.Unlock()
 
-	meta, exists := em.metadata[key]
+	meta, exists := evictionManager.metadata[key]
 	if !exists {
 		return
 	}
@@ -96,60 +96,60 @@ func (em *EvictionManager) RecordAccess(key string) {
 	meta.accessTime = time.Now()
 	meta.accessCount++
 
-	if em.strategy == EvictLRU {
-		if elem, ok := em.lruElements[key]; ok {
-			em.lruList.MoveToFront(elem)
+	if evictionManager.strategy == EvictLRU {
+		if element, ok := evictionManager.lruElements[key]; ok {
+			evictionManager.lruList.MoveToFront(element)
 		}
 	}
 }
 
-func (em *EvictionManager) RecordDelete(key string) {
-	if em.keyLimit == nil {
+func (evictionManager *EvictionManager) RecordDelete(key string) {
+	if evictionManager.keyLimit == nil {
 		return
 	}
 
-	em.mutex.Lock()
-	defer em.mutex.Unlock()
+	evictionManager.mutex.Lock()
+	defer evictionManager.mutex.Unlock()
 
-	delete(em.metadata, key)
-	if elem, exists := em.lruElements[key]; exists {
-		em.lruList.Remove(elem)
-		delete(em.lruElements, key)
+	delete(evictionManager.metadata, key)
+	if element, exists := evictionManager.lruElements[key]; exists {
+		evictionManager.lruList.Remove(element)
+		delete(evictionManager.lruElements, key)
 	}
 }
 
-func (em *EvictionManager) ShouldEvict() bool {
-	if !em.IsEnabled() {
+func (evictionManager *EvictionManager) ShouldEvict() bool {
+	if !evictionManager.IsEnabled() {
 		return false
 	}
 
-	em.mutex.RLock()
-	defer em.mutex.RUnlock()
+	evictionManager.mutex.RLock()
+	defer evictionManager.mutex.RUnlock()
 
-	return len(em.metadata) > *em.keyLimit
+	return len(evictionManager.metadata) > *evictionManager.keyLimit
 }
 
-func (em *EvictionManager) EvictOne() string {
-	if !em.IsEnabled() {
+func (evictionManager *EvictionManager) EvictOne() string {
+	if !evictionManager.IsEnabled() {
 		return ""
 	}
 
-	em.mutex.Lock()
-	defer em.mutex.Unlock()
+	evictionManager.mutex.Lock()
+	defer evictionManager.mutex.Unlock()
 
-	if len(em.metadata) <= *em.keyLimit {
+	if len(evictionManager.metadata) <= *evictionManager.keyLimit {
 		return ""
 	}
 
 	var keyToEvict string
 
-	switch em.strategy {
+	switch evictionManager.strategy {
 	case EvictLRU:
-		keyToEvict = em.findLRU()
+		keyToEvict = evictionManager.findLRU()
 	case EvictLFU:
-		keyToEvict = em.findLFU()
+		keyToEvict = evictionManager.findLFU()
 	case EvictFirst:
-		keyToEvict = em.findFirst()
+		keyToEvict = evictionManager.findFirst()
 	default:
 		return ""
 	}
@@ -158,35 +158,35 @@ func (em *EvictionManager) EvictOne() string {
 		return ""
 	}
 
-	delete(em.metadata, keyToEvict)
-	if elem, exists := em.lruElements[keyToEvict]; exists {
-		em.lruList.Remove(elem)
-		delete(em.lruElements, keyToEvict)
+	delete(evictionManager.metadata, keyToEvict)
+	if element, exists := evictionManager.lruElements[keyToEvict]; exists {
+		evictionManager.lruList.Remove(element)
+		delete(evictionManager.lruElements, keyToEvict)
 	}
 
-	if em.onEvict != nil {
-		em.onEvict(keyToEvict)
+	if evictionManager.onEvict != nil {
+		evictionManager.onEvict(keyToEvict)
 	}
 
 	return keyToEvict
 }
 
-func (em *EvictionManager) findLRU() string {
-	if em.lruList.Len() == 0 {
+func (evictionManager *EvictionManager) findLRU() string {
+	if evictionManager.lruList.Len() == 0 {
 		return ""
 	}
-	elem := em.lruList.Back()
-	if elem == nil {
+	element := evictionManager.lruList.Back()
+	if element == nil {
 		return ""
 	}
-	return elem.Value.(string)
+	return element.Value.(string)
 }
 
-func (em *EvictionManager) findLFU() string {
+func (evictionManager *EvictionManager) findLFU() string {
 	var minKey string
 	var minCount int64 = -1
 
-	for key, meta := range em.metadata {
+	for key, meta := range evictionManager.metadata {
 		if minCount == -1 || meta.accessCount < minCount {
 			minCount = meta.accessCount
 			minKey = key
@@ -195,11 +195,11 @@ func (em *EvictionManager) findLFU() string {
 	return minKey
 }
 
-func (em *EvictionManager) findFirst() string {
+func (evictionManager *EvictionManager) findFirst() string {
 	var oldestKey string
 	var oldestOrder int64 = -1
 
-	for key, meta := range em.metadata {
+	for key, meta := range evictionManager.metadata {
 		if oldestOrder == -1 || meta.insertOrder < oldestOrder {
 			oldestOrder = meta.insertOrder
 			oldestKey = key
@@ -208,8 +208,8 @@ func (em *EvictionManager) findFirst() string {
 	return oldestKey
 }
 
-func (em *EvictionManager) KeyCount() int {
-	em.mutex.RLock()
-	defer em.mutex.RUnlock()
-	return len(em.metadata)
+func (evictionManager *EvictionManager) KeyCount() int {
+	evictionManager.mutex.RLock()
+	defer evictionManager.mutex.RUnlock()
+	return len(evictionManager.metadata)
 }

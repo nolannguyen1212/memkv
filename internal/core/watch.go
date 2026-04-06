@@ -5,12 +5,12 @@ import (
 )
 
 type watchEntry struct {
-	connID uint64
-	dirty  *bool
+	connID  uint64
+	isDirty *bool
 }
 
 type WatchRegistry struct {
-	mu       sync.Mutex
+	mutex    sync.Mutex
 	watchers map[string][]watchEntry
 }
 
@@ -18,20 +18,20 @@ var globalWatch = &WatchRegistry{
 	watchers: make(map[string][]watchEntry),
 }
 
-func (r *WatchRegistry) Watch(key string, connID uint64, dirty *bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.watchers[key] = append(r.watchers[key], watchEntry{
-		connID: connID,
-		dirty:  dirty,
+func (registry *WatchRegistry) Watch(key string, connID uint64, isDirty *bool) {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+	registry.watchers[key] = append(registry.watchers[key], watchEntry{
+		connID:  connID,
+		isDirty: isDirty,
 	})
 }
 
-func (r *WatchRegistry) Notify(key string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, entry := range r.watchers[key] {
-		*entry.dirty = true
+func (registry *WatchRegistry) Notify(key string) {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+	for _, entry := range registry.watchers[key] {
+		*entry.isDirty = true
 	}
 }
 
@@ -39,11 +39,11 @@ func UnwatchConn(connID uint64) {
 	globalWatch.Unwatch(connID)
 }
 
-func (r *WatchRegistry) Unwatch(connID uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (registry *WatchRegistry) Unwatch(connID uint64) {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
 
-	for key, entries := range r.watchers {
+	for key, entries := range registry.watchers {
 		filtered := entries[:0]
 		for _, entry := range entries {
 			if entry.connID != connID {
@@ -51,9 +51,9 @@ func (r *WatchRegistry) Unwatch(connID uint64) {
 			}
 		}
 		if len(filtered) == 0 {
-			delete(r.watchers, key)
+			delete(registry.watchers, key)
 		} else {
-			r.watchers[key] = filtered
+			registry.watchers[key] = filtered
 		}
 	}
 }

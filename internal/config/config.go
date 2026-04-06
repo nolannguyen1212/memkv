@@ -9,6 +9,7 @@ import (
 
 type Configuration struct {
 	Server        ServerConfiguration        `yaml:"server"`
+	Replication   ReplicationConfiguration   `yaml:"replication"`
 	Persistence   PersistenceConfiguration   `yaml:"persistence"`
 	Datastructure DatastructureConfiguration `yaml:"datastructure"`
 	Memory        MemoryConfiguration        `yaml:"memory"`
@@ -20,6 +21,12 @@ type ServerConfiguration struct {
 	ReadTimeout  int    `yaml:"read_timeout"`
 	WriteTimeout int    `yaml:"write_timeout"`
 	Auth         string `yaml:"auth"`
+}
+
+type ReplicationConfiguration struct {
+	BacklogSize       int `yaml:"backlog_size"`
+	MinReplicas       int `yaml:"min_replicas"`
+	MinReplicasMaxLag int `yaml:"min_replica_max_lag"`
 }
 
 type PersistenceConfiguration struct {
@@ -66,27 +73,27 @@ func Load(path string) error {
 		return err
 	}
 
-	var cfg Configuration
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	var configuration Configuration
+	if err := yaml.Unmarshal(data, &configuration); err != nil {
 		return err
 	}
 
-	Global = &cfg
+	Global = &configuration
 	return nil
 }
 
-func (c *Configuration) ReadTimeout() time.Duration {
-	return time.Duration(c.Server.ReadTimeout) * time.Second
+func (configuration *Configuration) ReadTimeout() time.Duration {
+	return time.Duration(configuration.Server.ReadTimeout) * time.Second
 }
 
-func (c *Configuration) WriteTimeout() time.Duration {
-	return time.Duration(c.Server.WriteTimeout) * time.Second
+func (configuration *Configuration) WriteTimeout() time.Duration {
+	return time.Duration(configuration.Server.WriteTimeout) * time.Second
 }
 
-func (c *Configuration) AOFRewriteInterval() time.Duration {
-	return time.Duration(c.Persistence.AOF.RewriteInterval) * time.Second
+func (configuration *Configuration) AOFRewriteInterval() time.Duration {
+	return time.Duration(configuration.Persistence.AOF.RewriteInterval) * time.Second
 }
 
-func (c *Configuration) ExpirationCheckInterval() time.Duration {
-	return time.Duration(c.Datastructure.Expiration.CheckInterval) * time.Second
+func (configuration *Configuration) ExpirationCheckInterval() time.Duration {
+	return time.Duration(configuration.Datastructure.Expiration.CheckInterval) * time.Second
 }

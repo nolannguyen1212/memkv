@@ -4,8 +4,8 @@ import "sync/atomic"
 
 type ConnContext struct {
 	*Context
-	ID uint64
-	TX TxState
+	ID          uint64
+	Transaction TransactionState
 }
 
 var connCounter atomic.Uint64

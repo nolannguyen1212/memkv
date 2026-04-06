@@ -7,7 +7,7 @@ import (
 	"github.com/william1nguyen/valkeydb/internal/protocol"
 )
 
-type Handler func(cctx *ConnContext, args []protocol.Value) protocol.Value
+type Handler func(connContext *ConnContext, args []protocol.Value) protocol.Value
 
 type AOFAppender interface {
 	Append(value protocol.Value) error
@@ -65,8 +65,8 @@ func Register(name string, handler Handler) {
 func Lookup(name string) (Handler, bool) {
 	registryMutex.RLock()
 	defer registryMutex.RUnlock()
-	h, ok := handlers[strings.ToUpper(name)]
-	return h, ok
+	handler, ok := handlers[strings.ToUpper(name)]
+	return handler, ok
 }
 
 var txPassthrough = map[string]bool{
@@ -78,14 +78,14 @@ var txPassthrough = map[string]bool{
 	"QUIT":    true,
 }
 
-func Execute(cctx *ConnContext, name string, args []protocol.Value) protocol.Value {
-	if cctx.TX.Status == TxQueueing && !txPassthrough[name] {
-		cctx.TX.Enqueue(name, args)
+func Execute(connContext *ConnContext, name string, args []protocol.Value) protocol.Value {
+	if connContext.Transaction.Status == TransactionQueuing && !txPassthrough[name] {
+		connContext.Transaction.Enqueue(name, args)
 		return protocol.Value{Type: protocol.TypeSimpleString, String: "QUEUED"}
 	}
 	handler, exists := Lookup(name)
 	if !exists {
 		return ErrorResponse("ERR unknown command '" + name + "'")
 	}
-	return handler(cctx, args)
+	return handler(connContext, args)
 }

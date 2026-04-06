@@ -17,105 +17,105 @@ func init() {
 	Register("STTL", handleSttl)
 }
 
-func handleSadd(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleSadd(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 2 {
 		return WrongArgCountError("sadd")
 	}
 
 	key := args[0].String
 	members := extractStrings(args[1:])
-	count := cctx.Store.Set.Add(key, members...)
+	count := connContext.Store.Set.Add(key, members...)
 
-	cctx.OnKeyWrite(key)
-	cctx.AppendAOF(BuildBulkArray(append([]string{"SADD", key}, members...)...))
+	connContext.OnKeyWrite(key)
+	connContext.AppendAOF(BuildBulkArray(append([]string{"SADD", key}, members...)...))
 
 	return IntegerResponse(int64(count))
 }
 
-func handleSrem(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleSrem(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 2 {
 		return WrongArgCountError("srem")
 	}
 
 	key := args[0].String
 	members := extractStrings(args[1:])
-	count := cctx.Store.Set.Remove(key, members...)
+	count := connContext.Store.Set.Remove(key, members...)
 
-	cctx.OnKeyMutate(key)
-	cctx.AppendAOF(BuildBulkArray(append([]string{"SREM", key}, members...)...))
+	connContext.OnKeyMutate(key)
+	connContext.AppendAOF(BuildBulkArray(append([]string{"SREM", key}, members...)...))
 
 	return IntegerResponse(int64(count))
 }
 
-func handleSmembers(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleSmembers(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("smembers")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	members, exists := cctx.Store.Set.Members(args[0].String)
+	connContext.OnKeyRead(args[0].String)
+	members, exists := connContext.Store.Set.Members(args[0].String)
 	if !exists {
 		return NullArrayResponse()
 	}
 
 	items := make([]protocol.Value, len(members))
-	for i, m := range members {
-		items[i] = StringResponse(m)
+	for i, member := range members {
+		items[i] = StringResponse(member)
 	}
 	return ArrayResponse(items)
 }
 
-func handleSismember(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleSismember(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
 		return WrongArgCountError("sismember")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	if cctx.Store.Set.IsMember(args[0].String, args[1].String) {
+	connContext.OnKeyRead(args[0].String)
+	if connContext.Store.Set.IsMember(args[0].String, args[1].String) {
 		return IntegerResponse(1)
 	}
 	return IntegerResponse(0)
 }
 
-func handleScard(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleScard(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("scard")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	return IntegerResponse(int64(cctx.Store.Set.Cardinality(args[0].String)))
+	connContext.OnKeyRead(args[0].String)
+	return IntegerResponse(int64(connContext.Store.Set.Cardinality(args[0].String)))
 }
 
-func handleSexpire(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleSexpire(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
 		return WrongArgCountError("sexpire")
 	}
 
 	key := args[0].String
-	secs, err := strconv.Atoi(args[1].String)
+	seconds, err := strconv.Atoi(args[1].String)
 	if err != nil {
 		return NotIntegerError()
 	}
 
-	if !cctx.Store.Set.Expire(key, time.Duration(secs)*time.Second) {
+	if !connContext.Store.Set.Expire(key, time.Duration(seconds)*time.Second) {
 		return IntegerResponse(0)
 	}
 	return IntegerResponse(1)
 }
 
-func handleSttl(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleSttl(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("sttl")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	return IntegerResponse(cctx.Store.Set.TTL(args[0].String))
+	connContext.OnKeyRead(args[0].String)
+	return IntegerResponse(connContext.Store.Set.TTL(args[0].String))
 }
 
 func extractStrings(args []protocol.Value) []string {
 	result := make([]string, len(args))
-	for i, a := range args {
-		result[i] = a.String
+	for i, arg := range args {
+		result[i] = arg.String
 	}
 	return result
 }

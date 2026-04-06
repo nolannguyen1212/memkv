@@ -58,10 +58,10 @@ func NewStore(config StoreConfig) *Store {
 	return store
 }
 
-func (s *Store) deleteKey(key string) {
-	s.Dictionary.Delete(key)
-	s.Set.Remove(key)
-	s.List.LeftPop(key, s.List.Length(key))
-	s.HashMap.Delete(key)
-	s.SortedList.Remove(key)
+func (store *Store) deleteKey(key string) {
+	store.Dictionary.Delete(key)
+	store.Set.Remove(key)
+	store.List.LeftPop(key, store.List.Length(key))
+	store.HashMap.Delete(key)
+	store.SortedList.Remove(key)
 }

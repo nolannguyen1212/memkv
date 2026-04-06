@@ -11,56 +11,56 @@ func init() {
 	Register("HLEN", handleHlen)
 }
 
-func handleHset(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleHset(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 3 || len(args)%2 == 0 {
 		return WrongArgCountError("hset")
 	}
 
 	key := args[0].String
 	fieldValues := extractStrings(args[1:])
-	count := cctx.Store.HashMap.Set(key, fieldValues...)
+	count := connContext.Store.HashMap.Set(key, fieldValues...)
 
-	cctx.OnKeyWrite(key)
-	cctx.AppendAOF(BuildBulkArray(append([]string{"HSET", key}, fieldValues...)...))
+	connContext.OnKeyWrite(key)
+	connContext.AppendAOF(BuildBulkArray(append([]string{"HSET", key}, fieldValues...)...))
 
 	return IntegerResponse(int64(count))
 }
 
-func handleHget(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleHget(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
 		return WrongArgCountError("hget")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	value, exists := cctx.Store.HashMap.Get(args[0].String, args[1].String)
+	connContext.OnKeyRead(args[0].String)
+	value, exists := connContext.Store.HashMap.Get(args[0].String, args[1].String)
 	if !exists {
 		return NullStringResponse()
 	}
 	return StringResponse(value)
 }
 
-func handleHdel(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleHdel(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 2 {
 		return WrongArgCountError("hdel")
 	}
 
 	key := args[0].String
 	fields := extractStrings(args[1:])
-	count := cctx.Store.HashMap.Delete(key, fields...)
+	count := connContext.Store.HashMap.Delete(key, fields...)
 
-	cctx.OnKeyMutate(key)
-	cctx.AppendAOF(BuildBulkArray(append([]string{"HDEL", key}, fields...)...))
+	connContext.OnKeyMutate(key)
+	connContext.AppendAOF(BuildBulkArray(append([]string{"HDEL", key}, fields...)...))
 
 	return IntegerResponse(int64(count))
 }
 
-func handleHgetall(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleHgetall(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("hgetall")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	hash, exists := cctx.Store.HashMap.GetAll(args[0].String)
+	connContext.OnKeyRead(args[0].String)
+	hash, exists := connContext.Store.HashMap.GetAll(args[0].String)
 	if !exists {
 		return EmptyArrayResponse()
 	}
@@ -73,23 +73,23 @@ func handleHgetall(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	return ArrayResponse(items)
 }
 
-func handleHexists(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleHexists(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
 		return WrongArgCountError("hexists")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	if cctx.Store.HashMap.Exists(args[0].String, args[1].String) {
+	connContext.OnKeyRead(args[0].String)
+	if connContext.Store.HashMap.Exists(args[0].String, args[1].String) {
 		return IntegerResponse(1)
 	}
 	return IntegerResponse(0)
 }
 
-func handleHlen(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleHlen(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("hlen")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	return IntegerResponse(int64(cctx.Store.HashMap.FieldCount(args[0].String)))
+	connContext.OnKeyRead(args[0].String)
+	return IntegerResponse(int64(connContext.Store.HashMap.FieldCount(args[0].String)))
 }

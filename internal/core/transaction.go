@@ -2,32 +2,32 @@ package core
 
 import "github.com/william1nguyen/valkeydb/internal/protocol"
 
-type TxStatus uint8
+type TransactionStatus uint8
 
 const (
-	TxIdle TxStatus = iota
-	TxQueueing
+	TransactionIdle    TransactionStatus = iota
+	TransactionQueuing TransactionStatus = iota
 )
 
-type QueueCMD struct {
+type QueuedCommand struct {
 	Name string
 	Args []protocol.Value
 }
 
-type TxState struct {
-	Status  TxStatus
-	Queue   []QueueCMD
+type TransactionState struct {
+	Status  TransactionStatus
+	Queue   []QueuedCommand
 	Dirty   bool
 	Watches map[string]uint64
 }
 
-func (tx *TxState) Reset() {
-	tx.Status = TxIdle
-	tx.Queue = tx.Queue[:0]
-	tx.Dirty = false
-	tx.Watches = nil
+func (transaction *TransactionState) Reset() {
+	transaction.Status = TransactionIdle
+	transaction.Queue = transaction.Queue[:0]
+	transaction.Dirty = false
+	transaction.Watches = nil
 }
 
-func (tx *TxState) Enqueue(name string, args []protocol.Value) {
-	tx.Queue = append(tx.Queue, QueueCMD{Name: name, Args: args})
+func (transaction *TransactionState) Enqueue(name string, args []protocol.Value) {
+	transaction.Queue = append(transaction.Queue, QueuedCommand{Name: name, Args: args})
 }

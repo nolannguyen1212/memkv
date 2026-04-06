@@ -14,33 +14,33 @@ func NewHashMap() *HashMap {
 	return &HashMap{entries: make(map[string]map[string]string)}
 }
 
-func (h *HashMap) Set(key string, fieldValues ...string) int {
-	h.mutex.Lock()
-	defer h.mutex.Unlock()
+func (hashMap *HashMap) Set(key string, fieldValues ...string) int {
+	hashMap.mutex.Lock()
+	defer hashMap.mutex.Unlock()
 
 	if len(fieldValues)%2 != 0 {
 		return 0
 	}
-	if h.entries[key] == nil {
-		h.entries[key] = make(map[string]string)
+	if hashMap.entries[key] == nil {
+		hashMap.entries[key] = make(map[string]string)
 	}
 
 	added := 0
 	for i := 0; i < len(fieldValues); i += 2 {
 		field, value := fieldValues[i], fieldValues[i+1]
-		if _, exists := h.entries[key][field]; !exists {
+		if _, exists := hashMap.entries[key][field]; !exists {
 			added++
 		}
-		h.entries[key][field] = value
+		hashMap.entries[key][field] = value
 	}
 	return added
 }
 
-func (h *HashMap) Get(key, field string) (string, bool) {
-	h.mutex.RLock()
-	defer h.mutex.RUnlock()
+func (hashMap *HashMap) Get(key, field string) (string, bool) {
+	hashMap.mutex.RLock()
+	defer hashMap.mutex.RUnlock()
 
-	hash, exists := h.entries[key]
+	hash, exists := hashMap.entries[key]
 	if !exists {
 		return "", false
 	}
@@ -48,33 +48,33 @@ func (h *HashMap) Get(key, field string) (string, bool) {
 	return value, exists
 }
 
-func (h *HashMap) Delete(key string, fields ...string) int {
-	h.mutex.Lock()
-	defer h.mutex.Unlock()
+func (hashMap *HashMap) Delete(key string, fields ...string) int {
+	hashMap.mutex.Lock()
+	defer hashMap.mutex.Unlock()
 
-	hash, exists := h.entries[key]
+	hash, exists := hashMap.entries[key]
 	if !exists {
 		return 0
 	}
 
 	deleted := 0
-	for _, f := range fields {
-		if _, exists := hash[f]; exists {
-			delete(hash, f)
+	for _, field := range fields {
+		if _, exists := hash[field]; exists {
+			delete(hash, field)
 			deleted++
 		}
 	}
 	if len(hash) == 0 {
-		delete(h.entries, key)
+		delete(hashMap.entries, key)
 	}
 	return deleted
 }
 
-func (h *HashMap) GetAll(key string) (map[string]string, bool) {
-	h.mutex.RLock()
-	defer h.mutex.RUnlock()
+func (hashMap *HashMap) GetAll(key string) (map[string]string, bool) {
+	hashMap.mutex.RLock()
+	defer hashMap.mutex.RUnlock()
 
-	hash, exists := h.entries[key]
+	hash, exists := hashMap.entries[key]
 	if !exists {
 		return nil, false
 	}
@@ -83,11 +83,11 @@ func (h *HashMap) GetAll(key string) (map[string]string, bool) {
 	return result, true
 }
 
-func (h *HashMap) Exists(key, field string) bool {
-	h.mutex.RLock()
-	defer h.mutex.RUnlock()
+func (hashMap *HashMap) Exists(key, field string) bool {
+	hashMap.mutex.RLock()
+	defer hashMap.mutex.RUnlock()
 
-	hash, exists := h.entries[key]
+	hash, exists := hashMap.entries[key]
 	if !exists {
 		return false
 	}
@@ -95,19 +95,19 @@ func (h *HashMap) Exists(key, field string) bool {
 	return exists
 }
 
-func (h *HashMap) FieldCount(key string) int {
-	h.mutex.RLock()
-	defer h.mutex.RUnlock()
+func (hashMap *HashMap) FieldCount(key string) int {
+	hashMap.mutex.RLock()
+	defer hashMap.mutex.RUnlock()
 
-	return len(h.entries[key])
+	return len(hashMap.entries[key])
 }
 
-func (h *HashMap) Snapshot() map[string]map[string]string {
-	h.mutex.RLock()
-	defer h.mutex.RUnlock()
+func (hashMap *HashMap) Snapshot() map[string]map[string]string {
+	hashMap.mutex.RLock()
+	defer hashMap.mutex.RUnlock()
 
-	snapshot := make(map[string]map[string]string, len(h.entries))
-	for key, hash := range h.entries {
+	snapshot := make(map[string]map[string]string, len(hashMap.entries))
+	for key, hash := range hashMap.entries {
 		hashCopy := make(map[string]string, len(hash))
 		maps.Copy(hashCopy, hash)
 		snapshot[key] = hashCopy

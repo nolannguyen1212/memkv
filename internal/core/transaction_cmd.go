@@ -10,71 +10,71 @@ func init() {
 	Register("UNWATCH", handleUnwatch)
 }
 
-func handleMulti(cctx *ConnContext, _ []protocol.Value) protocol.Value {
-	if cctx.TX.Status == TxQueueing {
+func handleMulti(connContext *ConnContext, _ []protocol.Value) protocol.Value {
+	if connContext.Transaction.Status == TransactionQueuing {
 		return ErrorResponse("ERR MULTI calls can not be nested")
 	}
-	cctx.TX.Status = TxQueueing
+	connContext.Transaction.Status = TransactionQueuing
 	return OKResponse()
 }
 
-func handleExec(cctx *ConnContext, _ []protocol.Value) protocol.Value {
-	if cctx.TX.Status != TxQueueing {
+func handleExec(connContext *ConnContext, _ []protocol.Value) protocol.Value {
+	if connContext.Transaction.Status != TransactionQueuing {
 		return ErrorResponse("ERR EXEC without MULTI")
 	}
 
 	defer func() {
-		globalWatch.Unwatch(cctx.ID)
-		cctx.TX.Reset()
+		globalWatch.Unwatch(connContext.ID)
+		connContext.Transaction.Reset()
 	}()
 
-	if cctx.TX.Dirty {
+	if connContext.Transaction.Dirty {
 		return protocol.Value{Type: protocol.TypeArray, Array: nil}
 	}
 
-	cctx.Store.ExecMu.Lock()
-	defer cctx.Store.ExecMu.Unlock()
+	connContext.Store.ExecMu.Lock()
+	defer connContext.Store.ExecMu.Unlock()
 
-	cctx.TX.Status = TxIdle
+	connContext.Transaction.Status = TransactionIdle
 
-	results := make([]protocol.Value, len(cctx.TX.Queue))
-	for i, cmd := range cctx.TX.Queue {
-		results[i] = Execute(cctx, cmd.Name, cmd.Args)
+	results := make([]protocol.Value, len(connContext.Transaction.Queue))
+	for i, cmd := range connContext.Transaction.Queue {
+		results[i] = Execute(connContext, cmd.Name, cmd.Args)
 	}
 
 	return protocol.Value{Type: protocol.TypeArray, Array: results}
 }
 
-func handleDiscard(cctx *ConnContext, _ []protocol.Value) protocol.Value {
-	if cctx.TX.Status != TxQueueing {
+func handleDiscard(connContext *ConnContext, _ []protocol.Value) protocol.Value {
+	if connContext.Transaction.Status != TransactionQueuing {
 		return ErrorResponse("ERR DISCARD without MULTI")
 	}
-	globalWatch.Unwatch(cctx.ID)
-	cctx.TX.Reset()
+	globalWatch.Unwatch(connContext.ID)
+	connContext.Transaction.Reset()
 	return OKResponse()
 }
 
-func handleWatch(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleWatch(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) == 0 {
 		return WrongArgCountError("watch")
 	}
-	if cctx.TX.Status == TxQueueing {
+	if connContext.Transaction.Status == TransactionQueuing {
 		return ErrorResponse("ERR WATCH inside MULTI is not allowed")
 	}
-	if cctx.TX.Watches == nil {
-		cctx.TX.Watches = make(map[string]uint64)
+	if connContext.Transaction.Watches == nil {
+		connContext.Transaction.Watches = make(map[string]uint64)
 	}
-	for _, a := range args {
-		key := a.String
-		cctx.TX.Watches[key] = cctx.Store.Dictionary.Version(key)
-		globalWatch.Watch(key, cctx.ID, &cctx.TX.Dirty)
+	for _, arg := range args {
+		key := arg.String
+		connContext.Transaction.Watches[key] = connContext.Store.Dictionary.Version(key)
+		globalWatch.Watch(key, connContext.ID, &connContext.Transaction.Dirty)
 	}
 	return OKResponse()
 }
 
-func handleUnwatch(cctx *ConnContext, _ []protocol.Value) protocol.Value {
-	globalWatch.Unwatch(cctx.ID)
-	cctx.TX.Dirty = false
-	cctx.TX.Watches = nil
+func handleUnwatch(connContext *ConnContext, _ []protocol.Value) protocol.Value {
+	globalWatch.Unwatch(connContext.ID)
+	connContext.Transaction.Dirty = false
+	connContext.Transaction.Watches = nil
 	return OKResponse()
 }

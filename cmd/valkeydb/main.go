@@ -82,8 +82,8 @@ func loadRDBSnapshot(rdb *persistence.RDB, store *core.Store) {
 			continue
 		}
 		members := make([]string, 0, len(entry.Members))
-		for m := range entry.Members {
-			members = append(members, m)
+		for member := range entry.Members {
+			members = append(members, member)
 		}
 		store.Set.Add(key, members...)
 		if !entry.ExpiredAt.IsZero() {
@@ -108,8 +108,8 @@ func loadRDBSnapshot(rdb *persistence.RDB, store *core.Store) {
 }
 
 func loadAOFCommands(aof *persistence.AOF, ctx *core.Context) {
-	cctx := core.NewConnContext(ctx)
+	connContext := core.NewConnContext(ctx)
 	aof.Load(config.Global.Persistence.AOF.Filename, func(cmd string, args []protocol.Value) {
-		core.Execute(cctx, cmd, args)
+		core.Execute(connContext, cmd, args)
 	})
 }

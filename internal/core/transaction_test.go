@@ -26,21 +26,21 @@ func newTestConn(base *Context) *ConnContext {
 	return NewConnContext(base)
 }
 
-func exec(cctx *ConnContext, name string, args ...string) protocol.Value {
+func exec(connContext *ConnContext, name string, args ...string) protocol.Value {
 	vals := make([]protocol.Value, len(args))
-	for i, a := range args {
-		vals[i] = protocol.Value{Type: protocol.TypeBulkString, String: a}
+	for i, arg := range args {
+		vals[i] = protocol.Value{Type: protocol.TypeBulkString, String: arg}
 	}
-	return Execute(cctx, name, vals)
+	return Execute(connContext, name, vals)
 }
 
 func TestMultiExecBasic(t *testing.T) {
-	cctx := newTestContext()
+	connContext := newTestContext()
 
-	exec(cctx, "MULTI")
-	exec(cctx, "SET", "foo", "bar")
-	exec(cctx, "SET", "counter", "1")
-	result := exec(cctx, "EXEC")
+	exec(connContext, "MULTI")
+	exec(connContext, "SET", "foo", "bar")
+	exec(connContext, "SET", "counter", "1")
+	result := exec(connContext, "EXEC")
 
 	if result.Type != protocol.TypeArray {
 		t.Fatalf("EXEC expected array, got type %v", result.Type)
@@ -49,90 +49,90 @@ func TestMultiExecBasic(t *testing.T) {
 		t.Fatalf("EXEC expected 2 results, got %d", len(result.Array))
 	}
 
-	val, _ := cctx.Store.Dictionary.Get("foo")
+	val, _ := connContext.Store.Dictionary.Get("foo")
 	if val != "bar" {
 		t.Errorf("expected foo=bar, got %q", val)
 	}
 }
 
 func TestMultiQueuesAllTypes(t *testing.T) {
-	cctx := newTestContext()
+	connContext := newTestContext()
 
-	exec(cctx, "MULTI")
-	exec(cctx, "SET", "str", "hello")
-	exec(cctx, "SADD", "myset", "a", "b")
-	exec(cctx, "LPUSH", "mylist", "x")
-	exec(cctx, "HSET", "myhash", "field", "value")
-	exec(cctx, "ZADD", "myzset", "1.0", "member")
-	result := exec(cctx, "EXEC")
+	exec(connContext, "MULTI")
+	exec(connContext, "SET", "str", "hello")
+	exec(connContext, "SADD", "myset", "a", "b")
+	exec(connContext, "LPUSH", "mylist", "x")
+	exec(connContext, "HSET", "myhash", "field", "value")
+	exec(connContext, "ZADD", "myzset", "1.0", "member")
+	result := exec(connContext, "EXEC")
 
 	if len(result.Array) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(result.Array))
 	}
 
-	v, _ := cctx.Store.Dictionary.Get("str")
+	v, _ := connContext.Store.Dictionary.Get("str")
 	if v != "hello" {
 		t.Error("SET inside MULTI did not execute")
 	}
-	members, _ := cctx.Store.Set.Members("myset")
+	members, _ := connContext.Store.Set.Members("myset")
 	if len(members) != 2 {
 		t.Error("SADD inside MULTI did not execute")
 	}
-	if cctx.Store.List.Length("mylist") != 1 {
+	if connContext.Store.List.Length("mylist") != 1 {
 		t.Error("LPUSH inside MULTI did not execute")
 	}
-	hv, _ := cctx.Store.HashMap.Get("myhash", "field")
+	hv, _ := connContext.Store.HashMap.Get("myhash", "field")
 	if hv != "value" {
 		t.Error("HSET inside MULTI did not execute")
 	}
-	_, ok := cctx.Store.SortedList.Score("myzset", "member")
+	_, ok := connContext.Store.SortedList.Score("myzset", "member")
 	if !ok {
 		t.Error("ZADD inside MULTI did not execute")
 	}
 }
 
 func TestNestedMultiReturnsError(t *testing.T) {
-	cctx := newTestContext()
-	exec(cctx, "MULTI")
-	result := exec(cctx, "MULTI")
+	connContext := newTestContext()
+	exec(connContext, "MULTI")
+	result := exec(connContext, "MULTI")
 
 	if result.Type != protocol.TypeError {
 		t.Errorf("nested MULTI expected error, got %v", result.Type)
 	}
-	exec(cctx, "EXEC")
-	if cctx.TX.Status != TxIdle {
-		t.Error("expected TX to be idle after EXEC")
+	exec(connContext, "EXEC")
+	if connContext.Transaction.Status != TransactionIdle {
+		t.Error("expected Transaction to be idle after EXEC")
 	}
 }
 
 func TestExecWithoutMultiReturnsError(t *testing.T) {
-	cctx := newTestContext()
-	result := exec(cctx, "EXEC")
+	connContext := newTestContext()
+	result := exec(connContext, "EXEC")
 	if result.Type != protocol.TypeError {
 		t.Errorf("EXEC without MULTI expected error, got %v", result.Type)
 	}
 }
 
 func TestCommandInsideMultiReturnsQueued(t *testing.T) {
-	cctx := newTestContext()
-	exec(cctx, "MULTI")
-	result := exec(cctx, "SET", "k", "v")
+	connContext := newTestContext()
+	exec(connContext, "MULTI")
+	result := exec(connContext, "SET", "k", "v")
 
 	if result.Type != protocol.TypeSimpleString || result.String != "QUEUED" {
 		t.Errorf("expected QUEUED, got %v %q", result.Type, result.String)
 	}
 
-	exec(cctx, "EXEC")
+	exec(connContext, "EXEC")
 }
 
 func TestExecErrorInOneSlotDoesNotAbort(t *testing.T) {
-	cctx := newTestContext()
+	connContext := newTestContext()
 
-	exec(cctx, "MULTI")
-	exec(cctx, "SET", "k", "hello")
-	exec(cctx, "ZADD", "k", "notfloat", "member")
-	exec(cctx, "GET", "k")
-	result := exec(cctx, "EXEC")
+	exec(connContext, "MULTI")
+	exec(connContext, "SET", "k", "hello")
+	exec(connContext, "ZADD", "k", "notfloat", "member")
+	exec(connContext, "GET", "k")
+	result := exec(connContext, "EXEC")
 
 	if len(result.Array) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(result.Array))
@@ -149,45 +149,45 @@ func TestExecErrorInOneSlotDoesNotAbort(t *testing.T) {
 }
 
 func TestDiscardClearsQueue(t *testing.T) {
-	cctx := newTestContext()
+	connContext := newTestContext()
 
-	exec(cctx, "MULTI")
-	exec(cctx, "SET", "foo", "bar")
-	exec(cctx, "DISCARD")
+	exec(connContext, "MULTI")
+	exec(connContext, "SET", "foo", "bar")
+	exec(connContext, "DISCARD")
 
-	if cctx.TX.Status != TxIdle {
-		t.Error("expected TxIdle after DISCARD")
+	if connContext.Transaction.Status != TransactionIdle {
+		t.Error("expected TransactionIdle after DISCARD")
 	}
-	if len(cctx.TX.Queue) != 0 {
+	if len(connContext.Transaction.Queue) != 0 {
 		t.Error("expected empty queue after DISCARD")
 	}
-	_, ok := cctx.Store.Dictionary.Get("foo")
+	_, ok := connContext.Store.Dictionary.Get("foo")
 	if ok {
 		t.Error("SET should not have executed after DISCARD")
 	}
 }
 
 func TestDiscardWithoutMultiReturnsError(t *testing.T) {
-	cctx := newTestContext()
-	result := exec(cctx, "DISCARD")
+	connContext := newTestContext()
+	result := exec(connContext, "DISCARD")
 	if result.Type != protocol.TypeError {
 		t.Errorf("DISCARD without MULTI expected error, got %v", result.Type)
 	}
 }
 
 func TestWatchNoConflictExecSucceeds(t *testing.T) {
-	cctx := newTestContext()
-	exec(cctx, "SET", "counter", "0")
+	connContext := newTestContext()
+	exec(connContext, "SET", "counter", "0")
 
-	exec(cctx, "WATCH", "counter")
-	exec(cctx, "MULTI")
-	exec(cctx, "SET", "counter", "1")
-	result := exec(cctx, "EXEC")
+	exec(connContext, "WATCH", "counter")
+	exec(connContext, "MULTI")
+	exec(connContext, "SET", "counter", "1")
+	result := exec(connContext, "EXEC")
 
 	if result.Type != protocol.TypeArray || result.Array == nil {
 		t.Fatal("EXEC should succeed when watched key was not modified")
 	}
-	val, _ := cctx.Store.Dictionary.Get("counter")
+	val, _ := connContext.Store.Dictionary.Get("counter")
 	if val != "1" {
 		t.Errorf("expected counter=1, got %q", val)
 	}
@@ -195,22 +195,22 @@ func TestWatchNoConflictExecSucceeds(t *testing.T) {
 
 func TestWatchConflictAborts(t *testing.T) {
 	base := newTestBase()
-	cctx := newTestConn(base)
+	connContext := newTestConn(base)
 	other := newTestConn(base)
 
-	exec(cctx, "SET", "counter", "0")
-	exec(cctx, "WATCH", "counter")
-	exec(cctx, "MULTI")
-	exec(cctx, "SET", "counter", "1")
+	exec(connContext, "SET", "counter", "0")
+	exec(connContext, "WATCH", "counter")
+	exec(connContext, "MULTI")
+	exec(connContext, "SET", "counter", "1")
 
 	exec(other, "SET", "counter", "999")
 
-	result := exec(cctx, "EXEC")
+	result := exec(connContext, "EXEC")
 
 	if result.Type != protocol.TypeArray || result.Array != nil {
 		t.Fatal("EXEC should return nil array when watched key was modified")
 	}
-	val, _ := cctx.Store.Dictionary.Get("counter")
+	val, _ := connContext.Store.Dictionary.Get("counter")
 	if val != "999" {
 		t.Errorf("expected counter=999 (from other conn), got %q", val)
 	}
@@ -218,17 +218,17 @@ func TestWatchConflictAborts(t *testing.T) {
 
 func TestWatchSetConflictAborts(t *testing.T) {
 	base := newTestBase()
-	cctx := newTestConn(base)
+	connContext := newTestConn(base)
 	other := newTestConn(base)
 
-	exec(cctx, "SADD", "myset", "a")
-	exec(cctx, "WATCH", "myset")
-	exec(cctx, "MULTI")
-	exec(cctx, "SADD", "myset", "b")
+	exec(connContext, "SADD", "myset", "a")
+	exec(connContext, "WATCH", "myset")
+	exec(connContext, "MULTI")
+	exec(connContext, "SADD", "myset", "b")
 
 	exec(other, "SREM", "myset", "a")
 
-	result := exec(cctx, "EXEC")
+	result := exec(connContext, "EXEC")
 	if result.Type != protocol.TypeArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched set key was modified via SREM")
 	}
@@ -236,17 +236,17 @@ func TestWatchSetConflictAborts(t *testing.T) {
 
 func TestWatchListConflictAborts(t *testing.T) {
 	base := newTestBase()
-	cctx := newTestConn(base)
+	connContext := newTestConn(base)
 	other := newTestConn(base)
 
-	exec(cctx, "RPUSH", "mylist", "x")
-	exec(cctx, "WATCH", "mylist")
-	exec(cctx, "MULTI")
-	exec(cctx, "RPUSH", "mylist", "y")
+	exec(connContext, "RPUSH", "mylist", "x")
+	exec(connContext, "WATCH", "mylist")
+	exec(connContext, "MULTI")
+	exec(connContext, "RPUSH", "mylist", "y")
 
 	exec(other, "LPOP", "mylist")
 
-	result := exec(cctx, "EXEC")
+	result := exec(connContext, "EXEC")
 	if result.Type != protocol.TypeArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched list key was modified via LPOP")
 	}
@@ -254,17 +254,17 @@ func TestWatchListConflictAborts(t *testing.T) {
 
 func TestWatchHashConflictAborts(t *testing.T) {
 	base := newTestBase()
-	cctx := newTestConn(base)
+	connContext := newTestConn(base)
 	other := newTestConn(base)
 
-	exec(cctx, "HSET", "myhash", "field", "v1")
-	exec(cctx, "WATCH", "myhash")
-	exec(cctx, "MULTI")
-	exec(cctx, "HSET", "myhash", "field", "v2")
+	exec(connContext, "HSET", "myhash", "field", "v1")
+	exec(connContext, "WATCH", "myhash")
+	exec(connContext, "MULTI")
+	exec(connContext, "HSET", "myhash", "field", "v2")
 
 	exec(other, "HDEL", "myhash", "field")
 
-	result := exec(cctx, "EXEC")
+	result := exec(connContext, "EXEC")
 	if result.Type != protocol.TypeArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched hash key was modified via HDEL")
 	}
@@ -272,17 +272,17 @@ func TestWatchHashConflictAborts(t *testing.T) {
 
 func TestWatchZsetConflictAborts(t *testing.T) {
 	base := newTestBase()
-	cctx := newTestConn(base)
+	connContext := newTestConn(base)
 	other := newTestConn(base)
 
-	exec(cctx, "ZADD", "myzset", "1.0", "a")
-	exec(cctx, "WATCH", "myzset")
-	exec(cctx, "MULTI")
-	exec(cctx, "ZADD", "myzset", "2.0", "b")
+	exec(connContext, "ZADD", "myzset", "1.0", "a")
+	exec(connContext, "WATCH", "myzset")
+	exec(connContext, "MULTI")
+	exec(connContext, "ZADD", "myzset", "2.0", "b")
 
 	exec(other, "ZREM", "myzset", "a")
 
-	result := exec(cctx, "EXEC")
+	result := exec(connContext, "EXEC")
 	if result.Type != protocol.TypeArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched zset key was modified via ZREM")
 	}
@@ -290,46 +290,46 @@ func TestWatchZsetConflictAborts(t *testing.T) {
 
 func TestWatchDeleteConflictAborts(t *testing.T) {
 	base := newTestBase()
-	cctx := newTestConn(base)
+	connContext := newTestConn(base)
 	other := newTestConn(base)
 
-	exec(cctx, "SET", "foo", "bar")
-	exec(cctx, "WATCH", "foo")
-	exec(cctx, "MULTI")
-	exec(cctx, "SET", "foo", "baz")
+	exec(connContext, "SET", "foo", "bar")
+	exec(connContext, "WATCH", "foo")
+	exec(connContext, "MULTI")
+	exec(connContext, "SET", "foo", "baz")
 
 	exec(other, "DEL", "foo")
 
-	result := exec(cctx, "EXEC")
+	result := exec(connContext, "EXEC")
 	if result.Type != protocol.TypeArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched key was deleted by another conn")
 	}
 }
 
 func TestWatchInsideMultiReturnsError(t *testing.T) {
-	cctx := newTestContext()
-	exec(cctx, "MULTI")
-	result := exec(cctx, "WATCH", "foo")
+	connContext := newTestContext()
+	exec(connContext, "MULTI")
+	result := exec(connContext, "WATCH", "foo")
 	if result.Type != protocol.TypeError {
 		t.Errorf("WATCH inside MULTI should return error, got type %v %q", result.Type, result.String)
 	}
-	exec(cctx, "DISCARD")
+	exec(connContext, "DISCARD")
 }
 
 func TestUnwatchPreventsAbort(t *testing.T) {
 	base := newTestBase()
-	cctx := newTestConn(base)
+	connContext := newTestConn(base)
 	other := newTestConn(base)
 
-	exec(cctx, "SET", "k", "0")
-	exec(cctx, "WATCH", "k")
-	exec(cctx, "UNWATCH")
+	exec(connContext, "SET", "k", "0")
+	exec(connContext, "WATCH", "k")
+	exec(connContext, "UNWATCH")
 
 	exec(other, "SET", "k", "999")
 
-	exec(cctx, "MULTI")
-	exec(cctx, "SET", "k", "1")
-	result := exec(cctx, "EXEC")
+	exec(connContext, "MULTI")
+	exec(connContext, "SET", "k", "1")
+	result := exec(connContext, "EXEC")
 
 	if result.Type != protocol.TypeArray || result.Array == nil {
 		t.Fatal("EXEC should succeed after UNWATCH even if key was modified")
@@ -342,17 +342,17 @@ func TestDictionaryVersionBumpsOnWrite(t *testing.T) {
 		ExpirationMaxSampleSize: 20,
 		ExpirationMaxRounds:     3,
 	})
-	d := store.Dictionary
+	dictionary := store.Dictionary
 
-	if d.Version("missing") != 0 {
+	if dictionary.Version("missing") != 0 {
 		t.Error("missing key should have version 0")
 	}
 
-	d.Set("k", "v1", 0)
-	v1 := d.Version("k")
+	dictionary.Set("k", "v1", 0)
+	v1 := dictionary.Version("k")
 
-	d.Set("k", "v2", 0)
-	v2 := d.Version("k")
+	dictionary.Set("k", "v2", 0)
+	v2 := dictionary.Version("k")
 
 	if v2 <= v1 {
 		t.Errorf("version should increase on write: v1=%d v2=%d", v1, v2)
@@ -360,16 +360,16 @@ func TestDictionaryVersionBumpsOnWrite(t *testing.T) {
 }
 
 func TestWatchRegistryUnwatchOnDisconnect(t *testing.T) {
-	cctx := newTestContext()
+	connContext := newTestContext()
 
-	exec(cctx, "SET", "foo", "bar")
-	exec(cctx, "WATCH", "foo")
+	exec(connContext, "SET", "foo", "bar")
+	exec(connContext, "WATCH", "foo")
 
-	UnwatchConn(cctx.ID)
+	UnwatchConn(connContext.ID)
 
-	globalWatch.mu.Lock()
+	globalWatch.mutex.Lock()
 	entries := globalWatch.watchers["foo"]
-	globalWatch.mu.Unlock()
+	globalWatch.mutex.Unlock()
 
 	if len(entries) != 0 {
 		t.Errorf("expected no watchers after UnwatchConn, got %d", len(entries))
@@ -377,25 +377,25 @@ func TestWatchRegistryUnwatchOnDisconnect(t *testing.T) {
 }
 
 func TestTxStateReset(t *testing.T) {
-	cctx := newTestContext()
+	connContext := newTestContext()
 
-	cctx.TX.Status = TxQueueing
-	cctx.TX.Enqueue("SET", []protocol.Value{{String: "k"}, {String: "v"}})
-	cctx.TX.Dirty = true
-	cctx.TX.Watches = map[string]uint64{"foo": 5}
+	connContext.Transaction.Status = TransactionQueuing
+	connContext.Transaction.Enqueue("SET", []protocol.Value{{String: "k"}, {String: "v"}})
+	connContext.Transaction.Dirty = true
+	connContext.Transaction.Watches = map[string]uint64{"foo": 5}
 
-	cctx.TX.Reset()
+	connContext.Transaction.Reset()
 
-	if cctx.TX.Status != TxIdle {
-		t.Error("Status should be TxIdle after Reset")
+	if connContext.Transaction.Status != TransactionIdle {
+		t.Error("Status should be TransactionIdle after Reset")
 	}
-	if len(cctx.TX.Queue) != 0 {
+	if len(connContext.Transaction.Queue) != 0 {
 		t.Error("Queue should be empty after Reset")
 	}
-	if cctx.TX.Dirty {
+	if connContext.Transaction.Dirty {
 		t.Error("Dirty should be false after Reset")
 	}
-	if cctx.TX.Watches != nil {
+	if connContext.Transaction.Watches != nil {
 		t.Error("Watches should be nil after Reset")
 	}
 }
@@ -410,19 +410,19 @@ func TestConcurrentWritesAndWatch(t *testing.T) {
 	done := make(chan struct{})
 
 	go func() {
-		c := NewConnContext(ctx)
+		connContext := NewConnContext(ctx)
 		for i := 0; i < 1000; i++ {
-			exec(c, "SET", "shared", "value")
+			exec(connContext, "SET", "shared", "value")
 		}
 		close(done)
 	}()
 
 	for i := 0; i < 100; i++ {
-		c := NewConnContext(ctx)
-		exec(c, "WATCH", "shared")
-		exec(c, "MULTI")
-		exec(c, "GET", "shared")
-		exec(c, "EXEC")
+		connContext := NewConnContext(ctx)
+		exec(connContext, "WATCH", "shared")
+		exec(connContext, "MULTI")
+		exec(connContext, "GET", "shared")
+		exec(connContext, "EXEC")
 	}
 
 	<-done

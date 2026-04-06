@@ -17,37 +17,37 @@ func init() {
 	Register("SORT", handleSort)
 }
 
-func handleLpush(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleLpush(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 2 {
 		return WrongArgCountError("lpush")
 	}
 
 	key := args[0].String
 	values := extractStrings(args[1:])
-	length := cctx.Store.List.LeftPush(key, values...)
+	length := connContext.Store.List.LeftPush(key, values...)
 
-	cctx.OnKeyWrite(key)
-	cctx.AppendAOF(BuildBulkArray(append([]string{"LPUSH", key}, values...)...))
+	connContext.OnKeyWrite(key)
+	connContext.AppendAOF(BuildBulkArray(append([]string{"LPUSH", key}, values...)...))
 
 	return IntegerResponse(int64(length))
 }
 
-func handleRpush(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleRpush(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 2 {
 		return WrongArgCountError("rpush")
 	}
 
 	key := args[0].String
 	values := extractStrings(args[1:])
-	length := cctx.Store.List.RightPush(key, values...)
+	length := connContext.Store.List.RightPush(key, values...)
 
-	cctx.OnKeyWrite(key)
-	cctx.AppendAOF(BuildBulkArray(append([]string{"RPUSH", key}, values...)...))
+	connContext.OnKeyWrite(key)
+	connContext.AppendAOF(BuildBulkArray(append([]string{"RPUSH", key}, values...)...))
 
 	return IntegerResponse(int64(length))
 }
 
-func handleLpop(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleLpop(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 || len(args) > 2 {
 		return WrongArgCountError("lpop")
 	}
@@ -55,21 +55,21 @@ func handleLpop(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	key := args[0].String
 	count := 1
 	if len(args) > 1 {
-		c, err := strconv.Atoi(args[1].String)
+		parsedCount, err := strconv.Atoi(args[1].String)
 		if err != nil {
 			return NotIntegerError()
 		}
-		count = c
+		count = parsedCount
 	}
 
-	values := cctx.Store.List.LeftPop(key, count)
+	values := connContext.Store.List.LeftPop(key, count)
 	if len(values) > 0 {
-		cctx.OnKeyMutate(key)
+		connContext.OnKeyMutate(key)
 	}
 	return stringsToArray(values)
 }
 
-func handleRpop(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleRpop(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 || len(args) > 2 {
 		return WrongArgCountError("rpop")
 	}
@@ -77,30 +77,30 @@ func handleRpop(cctx *ConnContext, args []protocol.Value) protocol.Value {
 	key := args[0].String
 	count := 1
 	if len(args) > 1 {
-		c, err := strconv.Atoi(args[1].String)
+		parsedCount, err := strconv.Atoi(args[1].String)
 		if err != nil {
 			return NotIntegerError()
 		}
-		count = c
+		count = parsedCount
 	}
 
-	values := cctx.Store.List.RightPop(key, count)
+	values := connContext.Store.List.RightPop(key, count)
 	if len(values) > 0 {
-		cctx.OnKeyMutate(key)
+		connContext.OnKeyMutate(key)
 	}
 	return stringsToArray(values)
 }
 
-func handleLlen(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleLlen(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
 		return WrongArgCountError("llen")
 	}
 
-	cctx.OnKeyRead(args[0].String)
-	return IntegerResponse(int64(cctx.Store.List.Length(args[0].String)))
+	connContext.OnKeyRead(args[0].String)
+	return IntegerResponse(int64(connContext.Store.List.Length(args[0].String)))
 }
 
-func handleLrange(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleLrange(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 3 {
 		return WrongArgCountError("lrange")
 	}
@@ -115,15 +115,15 @@ func handleLrange(cctx *ConnContext, args []protocol.Value) protocol.Value {
 		return NotIntegerError()
 	}
 
-	cctx.OnKeyRead(key)
-	values, exists := cctx.Store.List.Range(key, start, stop)
+	connContext.OnKeyRead(key)
+	values, exists := connContext.Store.List.Range(key, start, stop)
 	if !exists {
 		return NullArrayResponse()
 	}
 	return stringsToArray(values)
 }
 
-func handleSort(cctx *ConnContext, args []protocol.Value) protocol.Value {
+func handleSort(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 {
 		return WrongArgCountError("sort")
 	}
@@ -146,7 +146,7 @@ func handleSort(cctx *ConnContext, args []protocol.Value) protocol.Value {
 		}
 	}
 
-	cctx.Store.List.Sort(key, ascending, alpha)
+	connContext.Store.List.Sort(key, ascending, alpha)
 	return OKResponse()
 }
 
