@@ -46,12 +46,12 @@ func ConfigureSystem(auth string, aof, rdb bool) {
 
 func handleAuth(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
-		return WrongArgCountError("auth")
+		return wrongArgCountError("auth")
 	}
 	if args[0].String != configuredAuth {
-		return ErrorResponse("ERR invalid password")
+		return errorReply("ERR invalid password")
 	}
-	return OKResponse()
+	return okReply()
 }
 
 func handleInfo(connContext *ConnContext, args []protocol.Value) protocol.Value {
@@ -59,48 +59,47 @@ func handleInfo(connContext *ConnContext, args []protocol.Value) protocol.Value 
 	if len(args) > 0 {
 		section = strings.ToLower(args[0].String)
 	}
-	return StringResponse(buildInfo(connContext, section))
+	return stringReply(buildInfo(connContext, section))
 }
 
 func buildInfo(connContext *ConnContext, section string) string {
-	var builder strings.Builder
 	uptime := int(time.Since(serverStartTime).Seconds())
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	addSection := func(name string, lines []string) {
-		if section != "all" && section != name {
-			return
-		}
-		for _, line := range lines {
-			builder.WriteString(line)
-			builder.WriteString("\n")
-		}
+	show := func(name string) bool {
+		return section == "all" || section == name
 	}
 
-	addSection("server", []string{"uptime_in_seconds:" + strconv.Itoa(uptime)})
-	addSection("clients", []string{
-		"connected_clients:" + strconv.Itoa(int(GetCurrentConnections())),
-		"total_connections_received:" + strconv.FormatUint(GetTotalConnections(), 10),
-	})
-	addSection("memory", []string{"used_memory:" + strconv.FormatUint(memStats.Alloc, 10)})
-	addSection("persistence", []string{
-		"aof_enabled:" + boolStr(aofEnabled),
-		"rdb_enabled:" + boolStr(rdbEnabled),
-		"bgsave_in_progress:" + strconv.Itoa(int(atomic.LoadInt32(&backgroundSaveInProgress))),
-	})
-	addSection("stats", []string{"total_commands_processed:" + strconv.FormatUint(GetTotalCommands(), 10)})
+	var lines []string
 
-	dictCount := len(connContext.Store.Dictionary.Snapshot())
-	setCount := len(connContext.Store.Set.Snapshot())
-	listCount := len(connContext.Store.List.Snapshot())
-	hashCount := len(connContext.Store.HashMap.Snapshot())
+	if show("server") {
+		lines = append(lines, "uptime_in_seconds:"+strconv.Itoa(uptime))
+	}
+	if show("clients") {
+		lines = append(lines, "connected_clients:"+strconv.Itoa(int(GetCurrentConnections())))
+		lines = append(lines, "total_connections_received:"+strconv.FormatUint(GetTotalConnections(), 10))
+	}
+	if show("memory") {
+		lines = append(lines, "used_memory:"+strconv.FormatUint(memStats.Alloc, 10))
+	}
+	if show("persistence") {
+		lines = append(lines, "aof_enabled:"+boolStr(aofEnabled))
+		lines = append(lines, "rdb_enabled:"+boolStr(rdbEnabled))
+		lines = append(lines, "bgsave_in_progress:"+strconv.Itoa(int(atomic.LoadInt32(&backgroundSaveInProgress))))
+	}
+	if show("stats") {
+		lines = append(lines, "total_commands_processed:"+strconv.FormatUint(GetTotalCommands(), 10))
+	}
+	if show("keyspace") {
+		dictCount := len(connContext.Store.Dictionary.Snapshot())
+		setCount := len(connContext.Store.Set.Snapshot())
+		listCount := len(connContext.Store.List.Snapshot())
+		hashCount := len(connContext.Store.Hash.Snapshot())
+		lines = append(lines, fmt.Sprintf("db0:dict=%d,set=%d,list=%d,hash=%d", dictCount, setCount, listCount, hashCount))
+	}
 
-	addSection("keyspace", []string{
-		fmt.Sprintf("db0:dict=%d,set=%d,list=%d,hash=%d", dictCount, setCount, listCount, hashCount),
-	})
-
-	return builder.String()
+	return strings.Join(lines, "\n")
 }
 
 func handleBgsave(connContext *ConnContext, args []protocol.Value) protocol.Value {
@@ -113,7 +112,7 @@ func handleBgsave(connContext *ConnContext, args []protocol.Value) protocol.Valu
 
 func handleKeys(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 {
-		return WrongArgCountError("keys")
+		return wrongArgCountError("keys")
 	}
 
 	pattern := args[0].String
@@ -134,17 +133,17 @@ func handleKeys(connContext *ConnContext, args []protocol.Value) protocol.Value 
 			keys = append(keys, key)
 		}
 	}
-	for key := range connContext.Store.HashMap.Snapshot() {
+	for key := range connContext.Store.Hash.Snapshot() {
 		if matched, _ := filepath.Match(pattern, key); matched {
 			keys = append(keys, key)
 		}
 	}
 
-	return stringsToArray(keys)
+	return valuesToArray(keys)
 }
 
 func handleMonitor(connContext *ConnContext, args []protocol.Value) protocol.Value {
-	return OKResponse()
+	return okReply()
 }
 
 func boolStr(b bool) string {
@@ -223,7 +222,7 @@ func MonitorPublish(cmd string, args []protocol.Value) {
 		builder.WriteString(arg.String)
 	}
 
-	message := StringResponse(builder.String())
+	message := stringReply(builder.String())
 	for monitorChannel := range monitorSubs {
 		select {
 		case monitorChannel <- message:

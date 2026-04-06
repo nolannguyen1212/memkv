@@ -99,7 +99,7 @@ func loadRDBSnapshot(rdb *persistence.RDB, store *core.Store) {
 
 	for key, hash := range snapshot.HashData {
 		for field, value := range hash {
-			store.HashMap.Set(key, field, value)
+			store.Hash.Set(key, field, value)
 		}
 	}
 

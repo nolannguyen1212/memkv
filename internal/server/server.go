@@ -75,7 +75,7 @@ func (server *Server) rewriteAOF() {
 		server.ctx.Store.Dictionary.Snapshot(),
 		server.ctx.Store.Set.Snapshot(),
 		server.ctx.Store.List.Snapshot(),
-		server.ctx.Store.HashMap.Snapshot(),
+		server.ctx.Store.Hash.Snapshot(),
 		aofFilename,
 	)
 	if err != nil {
@@ -141,7 +141,7 @@ func (server *Server) saveRDBSnapshot() {
 		DictData: server.ctx.Store.Dictionary.Snapshot(),
 		SetData:  server.ctx.Store.Set.Snapshot(),
 		ListData: server.ctx.Store.List.Snapshot(),
-		HashData: server.ctx.Store.HashMap.Snapshot(),
+		HashData: server.ctx.Store.Hash.Snapshot(),
 	}
 	_ = server.rdb.Save(snapshot, config.Global.Persistence.RDB.Filename)
 }

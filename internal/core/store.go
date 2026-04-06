@@ -12,8 +12,8 @@ type Store struct {
 	Dictionary *datastructure.Dictionary
 	Set        *datastructure.Set
 	List       *datastructure.List
-	HashMap    *datastructure.HashMap
-	SortedList *datastructure.SortedList
+	Hash       *datastructure.Hash
+	SortedSet  *datastructure.SortedSet
 	PubSub     *datastructure.PubSub
 	Eviction   *datastructure.EvictionManager
 	ExecMu     sync.Mutex
@@ -41,8 +41,8 @@ func NewStore(config StoreConfig) *Store {
 		Dictionary: datastructure.NewDictionary(expConfig),
 		Set:        datastructure.NewSet(expConfig),
 		List:       datastructure.NewList(),
-		HashMap:    datastructure.NewHashMap(),
-		SortedList: datastructure.NewSortedList(),
+		Hash:       datastructure.NewHash(),
+		SortedSet:  datastructure.NewSortedSet(),
 		PubSub:     datastructure.NewPubSub(),
 	}
 
@@ -62,6 +62,6 @@ func (store *Store) deleteKey(key string) {
 	store.Dictionary.Delete(key)
 	store.Set.Remove(key)
 	store.List.LeftPop(key, store.List.Length(key))
-	store.HashMap.Delete(key)
-	store.SortedList.Remove(key)
+	store.Hash.Delete(key)
+	store.SortedSet.Remove(key)
 }

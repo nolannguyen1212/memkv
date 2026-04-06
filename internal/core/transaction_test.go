@@ -81,11 +81,11 @@ func TestMultiQueuesAllTypes(t *testing.T) {
 	if connContext.Store.List.Length("mylist") != 1 {
 		t.Error("LPUSH inside MULTI did not execute")
 	}
-	hv, _ := connContext.Store.HashMap.Get("myhash", "field")
+	hv, _ := connContext.Store.Hash.Get("myhash", "field")
 	if hv != "value" {
 		t.Error("HSET inside MULTI did not execute")
 	}
-	_, ok := connContext.Store.SortedList.Score("myzset", "member")
+	_, ok := connContext.Store.SortedSet.Score("myzset", "member")
 	if !ok {
 		t.Error("ZADD inside MULTI did not execute")
 	}

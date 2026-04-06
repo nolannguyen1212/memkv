@@ -19,7 +19,7 @@ func init() {
 
 func handleLpush(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 2 {
-		return WrongArgCountError("lpush")
+		return wrongArgCountError("lpush")
 	}
 
 	key := args[0].String
@@ -27,14 +27,14 @@ func handleLpush(connContext *ConnContext, args []protocol.Value) protocol.Value
 	length := connContext.Store.List.LeftPush(key, values...)
 
 	connContext.OnKeyWrite(key)
-	connContext.AppendAOF(BuildBulkArray(append([]string{"LPUSH", key}, values...)...))
+	connContext.AppendAOF(buildBulkArray(append([]string{"LPUSH", key}, values...)...))
 
-	return IntegerResponse(int64(length))
+	return intReply(int64(length))
 }
 
 func handleRpush(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 2 {
-		return WrongArgCountError("rpush")
+		return wrongArgCountError("rpush")
 	}
 
 	key := args[0].String
@@ -42,14 +42,14 @@ func handleRpush(connContext *ConnContext, args []protocol.Value) protocol.Value
 	length := connContext.Store.List.RightPush(key, values...)
 
 	connContext.OnKeyWrite(key)
-	connContext.AppendAOF(BuildBulkArray(append([]string{"RPUSH", key}, values...)...))
+	connContext.AppendAOF(buildBulkArray(append([]string{"RPUSH", key}, values...)...))
 
-	return IntegerResponse(int64(length))
+	return intReply(int64(length))
 }
 
 func handleLpop(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 || len(args) > 2 {
-		return WrongArgCountError("lpop")
+		return wrongArgCountError("lpop")
 	}
 
 	key := args[0].String
@@ -57,7 +57,7 @@ func handleLpop(connContext *ConnContext, args []protocol.Value) protocol.Value 
 	if len(args) > 1 {
 		parsedCount, err := strconv.Atoi(args[1].String)
 		if err != nil {
-			return NotIntegerError()
+			return notIntegerError()
 		}
 		count = parsedCount
 	}
@@ -66,12 +66,12 @@ func handleLpop(connContext *ConnContext, args []protocol.Value) protocol.Value 
 	if len(values) > 0 {
 		connContext.OnKeyMutate(key)
 	}
-	return stringsToArray(values)
+	return valuesToArray(values)
 }
 
 func handleRpop(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 || len(args) > 2 {
-		return WrongArgCountError("rpop")
+		return wrongArgCountError("rpop")
 	}
 
 	key := args[0].String
@@ -79,7 +79,7 @@ func handleRpop(connContext *ConnContext, args []protocol.Value) protocol.Value 
 	if len(args) > 1 {
 		parsedCount, err := strconv.Atoi(args[1].String)
 		if err != nil {
-			return NotIntegerError()
+			return notIntegerError()
 		}
 		count = parsedCount
 	}
@@ -88,44 +88,44 @@ func handleRpop(connContext *ConnContext, args []protocol.Value) protocol.Value 
 	if len(values) > 0 {
 		connContext.OnKeyMutate(key)
 	}
-	return stringsToArray(values)
+	return valuesToArray(values)
 }
 
 func handleLlen(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
-		return WrongArgCountError("llen")
+		return wrongArgCountError("llen")
 	}
 
 	connContext.OnKeyRead(args[0].String)
-	return IntegerResponse(int64(connContext.Store.List.Length(args[0].String)))
+	return intReply(int64(connContext.Store.List.Length(args[0].String)))
 }
 
 func handleLrange(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 3 {
-		return WrongArgCountError("lrange")
+		return wrongArgCountError("lrange")
 	}
 
 	key := args[0].String
 	start, err := strconv.Atoi(args[1].String)
 	if err != nil {
-		return NotIntegerError()
+		return notIntegerError()
 	}
 	stop, err := strconv.Atoi(args[2].String)
 	if err != nil {
-		return NotIntegerError()
+		return notIntegerError()
 	}
 
 	connContext.OnKeyRead(key)
 	values, exists := connContext.Store.List.Range(key, start, stop)
 	if !exists {
-		return NullArrayResponse()
+		return nullArrayReply()
 	}
-	return stringsToArray(values)
+	return valuesToArray(values)
 }
 
 func handleSort(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 1 {
-		return WrongArgCountError("sort")
+		return wrongArgCountError("sort")
 	}
 
 	key := args[0].String
@@ -133,8 +133,7 @@ func handleSort(connContext *ConnContext, args []protocol.Value) protocol.Value 
 	alpha := false
 
 	for i := 1; i < len(args); i++ {
-		opt := strings.ToUpper(args[i].String)
-		switch opt {
+		switch strings.ToUpper(args[i].String) {
 		case "ASC":
 			ascending = true
 		case "DESC":
@@ -142,18 +141,19 @@ func handleSort(connContext *ConnContext, args []protocol.Value) protocol.Value 
 		case "ALPHA":
 			alpha = true
 		default:
-			return SyntaxError()
+			return syntaxError()
 		}
 	}
 
 	connContext.Store.List.Sort(key, ascending, alpha)
-	return OKResponse()
+	return okReply()
 }
 
-func stringsToArray(values []string) protocol.Value {
+// valuesToArray converts a string slice to a RESP array reply.
+func valuesToArray(values []string) protocol.Value {
 	items := make([]protocol.Value, len(values))
 	for i, v := range values {
-		items[i] = StringResponse(v)
+		items[i] = stringReply(v)
 	}
-	return ArrayResponse(items)
+	return arrayReply(items)
 }

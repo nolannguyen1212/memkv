@@ -3,6 +3,7 @@ package core
 import (
 	"strconv"
 
+	"github.com/william1nguyen/valkeydb/internal/datastructure"
 	"github.com/william1nguyen/valkeydb/internal/protocol"
 )
 
@@ -17,92 +18,92 @@ func init() {
 
 func handleZadd(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 3 || len(args)%2 == 0 {
-		return WrongArgCountError("zadd")
+		return wrongArgCountError("zadd")
 	}
 
 	key := args[0].String
-	scoreMembers := make([]interface{}, 0, len(args)-1)
+	items := make([]datastructure.ScoreMember, 0, (len(args)-1)/2)
 
 	for i := 1; i < len(args); i += 2 {
 		score, err := strconv.ParseFloat(args[i].String, 64)
 		if err != nil {
-			return ErrorResponse("ERR value is not a valid float")
+			return errorReply("ERR value is not a valid float")
 		}
-		member := args[i+1].String
-		scoreMembers = append(scoreMembers, score, member)
+		items = append(items, datastructure.ScoreMember{
+			Score:  score,
+			Member: args[i+1].String,
+		})
 	}
 
-	count := connContext.Store.SortedList.Add(key, scoreMembers...)
-
+	count := connContext.Store.SortedSet.Add(key, items...)
 	connContext.OnKeyWrite(key)
-
-	return IntegerResponse(int64(count))
+	return intReply(int64(count))
 }
 
 func handleZrem(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) < 2 {
-		return WrongArgCountError("zrem")
+		return wrongArgCountError("zrem")
 	}
 
 	key := args[0].String
 	members := extractStrings(args[1:])
-	count := connContext.Store.SortedList.Remove(key, members...)
+	count := connContext.Store.SortedSet.Remove(key, members...)
 
 	connContext.OnKeyMutate(key)
-	return IntegerResponse(int64(count))
+	return intReply(int64(count))
 }
 
 func handleZscore(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
-		return WrongArgCountError("zscore")
+		return wrongArgCountError("zscore")
 	}
 
 	connContext.OnKeyRead(args[0].String)
-	score, exists := connContext.Store.SortedList.Score(args[0].String, args[1].String)
+	score, exists := connContext.Store.SortedSet.Score(args[0].String, args[1].String)
 	if !exists {
-		return NullStringResponse()
+		return nullStringReply()
 	}
-	return StringResponse(strconv.FormatFloat(score, 'f', -1, 64))
+	return stringReply(strconv.FormatFloat(score, 'f', -1, 64))
 }
 
 func handleZrank(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 2 {
-		return WrongArgCountError("zrank")
+		return wrongArgCountError("zrank")
 	}
 
 	connContext.OnKeyRead(args[0].String)
-	rank, exists := connContext.Store.SortedList.Rank(args[0].String, args[1].String)
+	rank, exists := connContext.Store.SortedSet.Rank(args[0].String, args[1].String)
 	if !exists {
-		return NullStringResponse()
+		return nullStringReply()
 	}
-	return IntegerResponse(int64(rank))
+	return intReply(int64(rank))
 }
 
 func handleZcard(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 1 {
-		return WrongArgCountError("zcard")
+		return wrongArgCountError("zcard")
 	}
 
 	connContext.OnKeyRead(args[0].String)
-	return IntegerResponse(int64(connContext.Store.SortedList.Cardinality(args[0].String)))
+	return intReply(int64(connContext.Store.SortedSet.Cardinality(args[0].String)))
 }
 
 func handleZrange(connContext *ConnContext, args []protocol.Value) protocol.Value {
 	if len(args) != 3 {
-		return WrongArgCountError("zrange")
+		return wrongArgCountError("zrange")
 	}
 
 	key := args[0].String
 	start, err := strconv.Atoi(args[1].String)
 	if err != nil {
-		return NotIntegerError()
+		return notIntegerError()
 	}
 	stop, err := strconv.Atoi(args[2].String)
 	if err != nil {
-		return NotIntegerError()
+		return notIntegerError()
 	}
 
 	connContext.OnKeyRead(key)
-	members := connContext.Store.SortedList.Range(key, start, stop)
-	return stringsToArray(members)
+	members := connContext.Store.SortedSet.Range(key, start, stop)
+	return valuesToArray(members)
 }

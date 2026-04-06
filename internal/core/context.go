@@ -85,7 +85,7 @@ func Execute(connContext *ConnContext, name string, args []protocol.Value) proto
 	}
 	handler, exists := Lookup(name)
 	if !exists {
-		return ErrorResponse("ERR unknown command '" + name + "'")
+		return errorReply("ERR unknown command '" + name + "'")
 	}
 	return handler(connContext, args)
 }
