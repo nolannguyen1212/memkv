@@ -39,15 +39,55 @@ OK
 
 ## Supported Commands
 
-| Category | Commands |
-|----------|----------|
-| String | SET, GET, DEL, TTL, EXPIRE, PING |
-| Sorted Set | ZADD, ZREM, ZSCORE, ZRANK, ZCARD, ZRANGE |
-| Set | SADD, SREM, SCARD, SMEMBERS, SISMEMBER, SEXPIRE, STTL |
-| List | LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE, SORT |
-| Hash | HSET, HGET, HDEL, HGETALL, HEXISTS, HLEN |
-| Pub/Sub | SUBSCRIBE, UNSUBSCRIBE, PUBLISH |
-| System | AUTH, INFO, BGSAVE, KEYS, MONITOR |
+| Category    | Commands                                              |
+| ----------- | ----------------------------------------------------- |
+| String      | SET, GET, DEL, TTL, EXPIRE, PING                      |
+| Sorted Set  | ZADD, ZREM, ZSCORE, ZRANK, ZCARD, ZRANGE              |
+| Set         | SADD, SREM, SCARD, SMEMBERS, SISMEMBER, SEXPIRE, STTL |
+| List        | LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE, SORT          |
+| Hash        | HSET, HGET, HDEL, HGETALL, HEXISTS, HLEN              |
+| Pub/Sub     | SUBSCRIBE, UNSUBSCRIBE, PUBLISH                       |
+| Transaction | MULTI, EXEC, DISCARD, WATCH, UNWATCH                  |
+| System      | AUTH, INFO, BGSAVE, KEYS, MONITOR                     |
+
+## Transactions
+
+ValkeyDB supports atomic transactions via `MULTI/EXEC` with optimistic locking via `WATCH`.
+
+**Basic transaction:**
+
+```bash
+127.0.0.1:6379> MULTI
+OK
+127.0.0.1:6379> SET counter 1
+QUEUED
+127.0.0.1:6379> SET name "alice"
+QUEUED
+127.0.0.1:6379> EXEC
+1) OK
+2) OK
+```
+
+**Optimistic locking with WATCH:**
+
+```bash
+127.0.0.1:6379> WATCH balance
+OK
+127.0.0.1:6379> MULTI
+OK
+127.0.0.1:6379> SET balance 100
+QUEUED
+127.0.0.1:6379> EXEC
+(nil)   # returns nil if a watched key was modified before EXEC
+```
+
+| Command   | Description                                                   |
+| --------- | ------------------------------------------------------------- |
+| `MULTI`   | Start a transaction block                                     |
+| `EXEC`    | Execute all queued commands atomically                        |
+| `DISCARD` | Discard all queued commands and exit the transaction          |
+| `WATCH`   | Watch keys; abort transaction if any key changes before EXEC  |
+| `UNWATCH` | Unwatch all watched keys                                      |
 
 ## Configuration
 
@@ -88,11 +128,11 @@ logging:
 
 When `key_limit` is exceeded, keys are evicted based on `evict_strategy`:
 
-| Strategy | Behavior |
-|----------|----------|
-| `lru` | Evict least recently accessed key |
-| `lfu` | Evict key with lowest access frequency |
-| `evict_first` | Evict earliest inserted key |
+| Strategy        | Behavior                               |
+| --------------- | -------------------------------------- |
+| `lru`         | Evict least recently accessed key      |
+| `lfu`         | Evict key with lowest access frequency |
+| `evict_first` | Evict earliest inserted key            |
 
 ## Architecture
 
@@ -118,12 +158,12 @@ docker run --rm -p 6379:6379 valkeydb:latest
 
 ## TODO
 
-- [x] RESP protocol
-- [x] Dictionary, Set, List, Hash
-- [x] Sorted Sets (ZADD, ZRANGE, ZRANK)
-- [x] AOF and RDB persistence
-- [x] TTL and key expiration
-- [x] Memory eviction (LRU/LFU)
-- [ ] Transaction support (MULTI/EXEC)
+- [X] RESP protocol
+- [X] Dictionary, Set, List, Hash
+- [X] Sorted Sets (ZADD, ZRANGE, ZRANK)
+- [X] AOF and RDB persistence
+- [X] TTL and key expiration
+- [X] Memory eviction (LRU/LFU)
+- [X] Transaction support (MULTI/EXEC)
 - [ ] Replication
 - [ ] Cluster mode
