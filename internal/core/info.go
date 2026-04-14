@@ -98,6 +98,9 @@ func buildInfo(connContext *ConnContext, section string) string {
 		hashCount := len(connContext.Store.Hash.Snapshot())
 		lines = append(lines, fmt.Sprintf("db0:dict=%d,set=%d,list=%d,hash=%d", dictCount, setCount, listCount, hashCount))
 	}
+	if show("replication") && connContext.Replication != nil {
+		lines = append(lines, connContext.Replication.Info())
+	}
 
 	return strings.Join(lines, "\n")
 }

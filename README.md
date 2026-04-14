@@ -89,6 +89,28 @@ QUEUED
 | `WATCH`   | Watch keys; abort transaction if any key changes before EXEC  |
 | `UNWATCH` | Unwatch all watched keys                                      |
 
+## Replication
+
+ValkeyDB supports primary-replica replication. Start a primary normally, then connect replicas using the API key printed at startup.
+
+**Start primary:**
+
+```bash
+make run
+# Server API key: <api-key>
+```
+
+**Start replica:**
+
+```bash
+make replica ADDRESS=<primary-addr> APIKEY=<api-key>
+# e.g. make replica ADDRESS=localhost:6379 APIKEY=abc123
+```
+
+![Replication Architecture](assets/replication.png)
+
+On connect, the replica performs a **full sync** (RDB snapshot) or **partial sync** (backlog delta on reconnect). Write commands are then streamed in real-time with heartbeat/ACK for liveness tracking.
+
 ## Configuration
 
 Edit `config.yaml`:
@@ -100,11 +122,17 @@ server:
   write_timeout: 300
   auth: secretpassword
 
+replication:
+  backlog_size: 1048576
+  heartbeat_interval: 1
+  heartbeat_timeout: 5
+
 persistence:
   aof:
     enabled: true
     filename: "appendonly.aof"
-    rewrite_interval: 60
+    rewrite_interval: 3600
+    max_size_mb: 64
   rdb:
     enabled: true
     filename: "dump.rdb"
@@ -116,7 +144,7 @@ datastructure:
     check_interval: 1
 
 memory:
-  key_limit: 5000000     # not set is unlimited
+  key_limit: 5000000     # unlimited if not set
   evict_strategy: "lru"  # lru, lfu, evict_first
 
 logging:
@@ -165,5 +193,5 @@ docker run --rm -p 6379:6379 valkeydb:latest
 - [X] TTL and key expiration
 - [X] Memory eviction (LRU/LFU)
 - [X] Transaction support (MULTI/EXEC)
-- [ ] Replication
+- [X] Replication (primary-replica)
 - [ ] Cluster mode

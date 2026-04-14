@@ -15,15 +15,15 @@ var testStoreConfig = StoreConfig{
 }
 
 func newTestBase() *Context {
-	return NewContext(NewStore(testStoreConfig), nil)
+	return NewContext(NewStore(testStoreConfig), nil, nil)
 }
 
 func newTestContext() *ConnContext {
-	return NewConnContext(newTestBase())
+	return NewConnContext(newTestBase(), nil)
 }
 
 func newTestConn(base *Context) *ConnContext {
-	return NewConnContext(base)
+	return NewConnContext(base, nil)
 }
 
 func exec(connContext *ConnContext, name string, args ...string) protocol.Value {
@@ -405,12 +405,12 @@ func TestConcurrentWritesAndWatch(t *testing.T) {
 		ExpirationCheckInterval: time.Second,
 		ExpirationMaxSampleSize: 20,
 		ExpirationMaxRounds:     3,
-	}), nil)
+	}), nil, nil)
 
 	done := make(chan struct{})
 
 	go func() {
-		connContext := NewConnContext(ctx)
+		connContext := NewConnContext(ctx, nil)
 		for i := 0; i < 1000; i++ {
 			exec(connContext, "SET", "shared", "value")
 		}
@@ -418,7 +418,7 @@ func TestConcurrentWritesAndWatch(t *testing.T) {
 	}()
 
 	for i := 0; i < 100; i++ {
-		connContext := NewConnContext(ctx)
+		connContext := NewConnContext(ctx, nil)
 		exec(connContext, "WATCH", "shared")
 		exec(connContext, "MULTI")
 		exec(connContext, "GET", "shared")

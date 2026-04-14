@@ -3,10 +3,15 @@ package server
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/william1nguyen/valkeydb/internal/config"
@@ -37,11 +42,12 @@ func New(address string, ctx *core.Context, aof *persistence.AOF, rdb *persisten
 }
 
 func (server *Server) ListenAndServe() error {
-	listener, err := net.Listen(networkType, server.address)
+	listener, addr, err := listenWithFallback(networkType, server.address)
 	if err != nil {
 		return err
 	}
 
+	server.address = addr
 	server.listener = listener
 	server.shutdownChan = make(chan struct{})
 
@@ -51,17 +57,63 @@ func (server *Server) ListenAndServe() error {
 	return server.acceptConnections()
 }
 
+func listenWithFallback(network, address string) (net.Listener, string, error) {
+	host, portStr, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, "", err
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid port %q: %w", portStr, err)
+	}
+
+	for {
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
+		ln, err := net.Listen(network, addr)
+		if err == nil {
+			return ln, addr, nil
+		}
+		if isAddrInUse(err) {
+			log.Printf("port %d in use, trying %d", port, port+1)
+			port++
+			continue
+		}
+		return nil, "", err
+	}
+}
+
+func isAddrInUse(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		var syscallErr *os.SyscallError
+		if errors.As(opErr.Err, &syscallErr) {
+			return errors.Is(syscallErr.Err, syscall.EADDRINUSE)
+		}
+	}
+	return false
+}
+
 func (server *Server) startBackgroundTasks() {
 	server.waitGroup.Add(1)
 	go func() {
 		defer server.waitGroup.Done()
-		ticker := time.NewTicker(config.Global.AOFRewriteInterval())
+		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
+		lastRewrite := time.Now()
 
 		for {
 			select {
 			case <-ticker.C:
-				server.rewriteAOF()
+				maxMB := float64(config.Global.Persistence.AOF.MaxSizeMB)
+				sizeMB := server.aof.SizeMB()
+				elapsed := time.Since(lastRewrite)
+				sizeExceeded := maxMB > 0 && sizeMB >= maxMB
+				timeExceeded := elapsed >= config.Global.AOFRewriteInterval()
+				if sizeExceeded || timeExceeded {
+					log.Printf("aof rewrite: size=%.1fMB elapsed=%v", sizeMB, elapsed.Round(time.Second))
+					server.rewriteAOF()
+					lastRewrite = time.Now()
+				}
 			case <-server.shutdownChan:
 				return
 			}
@@ -156,9 +208,14 @@ func (server *Server) closePersistence() {
 }
 
 func (server *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
+	connTaken := false
+	defer func() {
+		if !connTaken {
+			conn.Close()
+		}
+	}()
 
-	connContext := core.NewConnContext(server.ctx)
+	connContext := core.NewConnContext(server.ctx, conn)
 	defer core.UnwatchConn(connContext.ID)
 
 	reader := bufio.NewReader(conn)
@@ -184,6 +241,11 @@ func (server *Server) handleConnection(conn net.Conn) {
 		core.MonitorPublish(cmdName, request.Array[1:])
 		response := core.Execute(connContext, cmdName, request.Array[1:])
 		core.IncCommands()
+
+		if cmdName == "PSYNC" {
+			connTaken = true
+			return
+		}
 
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.WriteTimeout()))
 		if err := server.writeResponse(writer, conn, response); err != nil {
@@ -220,7 +282,7 @@ func (server *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer,
 		server.writeResponse(writer, conn, response)
 		return true
 
-	case "PING", "QUIT":
+	case "PING", "QUIT", "REPLCONF", "PSYNC":
 		return false
 
 	default:

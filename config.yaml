@@ -6,14 +6,15 @@ server:
 
 replication:
   backlog_size: 1048576
-  min_replicas: 0
-  min_replicas_max_lag: 10
+  heartbeat_interval: 1
+  heartbeat_timeout: 5
 
 persistence:
   aof:
     enabled: true
     filename: "appendonly.aof"
-    rewrite_interval: 60
+    rewrite_interval: 3600
+    max_size_mb: 64
   rdb:
     enabled: true
     filename: "dump.rdb"

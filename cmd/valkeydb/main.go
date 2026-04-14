@@ -1,18 +1,25 @@
 package main
 
 import (
+	"flag"
 	"log"
 
 	"github.com/william1nguyen/valkeydb/internal/config"
 	"github.com/william1nguyen/valkeydb/internal/core"
+	_ "github.com/william1nguyen/valkeydb/internal/core/replication"
 	"github.com/william1nguyen/valkeydb/internal/persistence"
 	"github.com/william1nguyen/valkeydb/internal/protocol"
+	"github.com/william1nguyen/valkeydb/internal/replication"
 	"github.com/william1nguyen/valkeydb/internal/server"
 )
 
 const defaultConfigPath = "config.yaml"
 
 func main() {
+	joinAddr := flag.String("join-addr", "", "Primary address to join as replica")
+	joinAPIKey := flag.String("join-apikey", "", "API key of the primary to join")
+	flag.Parse()
+
 	if err := config.Load(defaultConfigPath); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -47,13 +54,34 @@ func main() {
 		log.Fatalf("Failed to open RDB: %v", err)
 	}
 
-	ctx := core.NewContext(store, aof)
+	replicationManager := replication.NewManager(replication.ManagerConfig{
+		BacklogCapacity:   config.Global.Replication.BacklogSize,
+		HeartbeatInterval: config.Global.HeartbeatInterval(),
+		HeartbeatTimeout:  config.Global.HeartbeatTimeout(),
+		ListeningAddress:  config.Global.Server.Address,
+	})
 
+	ctx := core.NewContext(store, aof, replicationManager)
+
+	replicationManager.SetReplaying(true)
 	loadRDBSnapshot(rdb, store)
 	loadAOFCommands(aof, ctx)
+	replicationManager.SetReplaying(false)
+
+	stopLiveness := make(chan struct{})
+	go replicationManager.StartLivenessMonitor(stopLiveness)
+
+	if *joinAddr != "" && *joinAPIKey != "" {
+		dispatchContext := core.NewConnContext(ctx, nil)
+		dispatch := func(cmd string, args []protocol.Value) {
+			core.Execute(dispatchContext, cmd, args)
+		}
+		replicationManager.SetReplica(*joinAddr, *joinAPIKey, dispatch)
+	}
 
 	valkeyServer := server.New(config.Global.Server.Address, ctx, aof, rdb)
 
+	log.Printf("Server API key: %s", replicationManager.ServerAPIKey())
 	log.Printf("Starting ValkeyDB on %s", config.Global.Server.Address)
 	if err := valkeyServer.ListenAndServe(); err != nil {
 		log.Fatal(err)
@@ -108,7 +136,7 @@ func loadRDBSnapshot(rdb *persistence.RDB, store *core.Store) {
 }
 
 func loadAOFCommands(aof *persistence.AOF, ctx *core.Context) {
-	connContext := core.NewConnContext(ctx)
+	connContext := core.NewConnContext(ctx, nil)
 	aof.Load(config.Global.Persistence.AOF.Filename, func(cmd string, args []protocol.Value) {
 		core.Execute(connContext, cmd, args)
 	})

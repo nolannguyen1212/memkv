@@ -25,8 +25,8 @@ type ServerConfiguration struct {
 
 type ReplicationConfiguration struct {
 	BacklogSize       int `yaml:"backlog_size"`
-	MinReplicas       int `yaml:"min_replicas"`
-	MinReplicasMaxLag int `yaml:"min_replica_max_lag"`
+	HeartbeatInterval int `yaml:"heartbeat_interval"`
+	HeartbeatTimeout  int `yaml:"heartbeat_timeout"`
 }
 
 type PersistenceConfiguration struct {
@@ -38,6 +38,7 @@ type AOFConfiguration struct {
 	Enabled         bool   `yaml:"enabled"`
 	Filename        string `yaml:"filename"`
 	RewriteInterval int    `yaml:"rewrite_interval"`
+	MaxSizeMB       int    `yaml:"max_size_mb"`
 }
 
 type RDBConfiguration struct {
@@ -96,4 +97,12 @@ func (configuration *Configuration) AOFRewriteInterval() time.Duration {
 
 func (configuration *Configuration) ExpirationCheckInterval() time.Duration {
 	return time.Duration(configuration.Datastructure.Expiration.CheckInterval) * time.Second
+}
+
+func (configuration *Configuration) HeartbeatInterval() time.Duration {
+	return time.Duration(configuration.Replication.HeartbeatInterval) * time.Second
+}
+
+func (configuration *Configuration) HeartbeatTimeout() time.Duration {
+	return time.Duration(configuration.Replication.HeartbeatTimeout) * time.Second
 }

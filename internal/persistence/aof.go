@@ -82,6 +82,21 @@ func (aof *AOF) Load(path string, dispatch func(cmd string, args []protocol.Valu
 	return nil
 }
 
+func (aof *AOF) IsReplaying() bool {
+	return aof.isReplaying
+}
+
+func (aof *AOF) SizeMB() float64 {
+	if !aof.enabled || aof.file == nil {
+		return 0
+	}
+	info, err := aof.file.Stat()
+	if err != nil {
+		return 0
+	}
+	return float64(info.Size()) / (1024 * 1024)
+}
+
 func (aof *AOF) Close() error {
 	if !aof.enabled {
 		return nil
