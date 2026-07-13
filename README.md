@@ -1,22 +1,26 @@
 # ValkeyDB
 
-A high-performance, Redis-compatible in-memory database built from scratch in Go.
+ValkeyDB is an experimental, Redis-inspired in-memory database written from scratch in Go. It implements a focused RESP-compatible command subset together with TTL expiration, configurable key eviction, AOF/RDB-style persistence, transactions, Pub/Sub, and primary-replica replication.
 
-## Key Features
+> [!IMPORTANT]
+> ValkeyDB is an educational project, not a drop-in Redis/Valkey replacement or a production-ready database. See [Current limitations](#current-limitations) for the known correctness and compatibility gaps.
 
-- **RESP Protocol Compliant**: Fully compatible with redis-cli and other Redis clients
-- **Multiple Data Structures**:
-  - Dictionary (String key-value pairs)
-  - Sets (Unique collections)
-  - Lists (Deque semantics)
-  - Hashes (Field-value maps)
-  - Sorted Sets (Score-based ordering using Skip List)
-  - Pub/Sub (Message broadcasting)
-- **Memory Eviction**: Configurable eviction strategies (LRU, LFU, EvictFirst)
-- **Dual Persistence**: AOF and RDB support
-- **TTL Support**: Automatic key expiration
+## Highlights
 
-## Getting Started
+- RESP request parsing and response encoding compatible with `redis-cli` for the supported command subset
+- Concurrent TCP server with per-connection authentication and read/write deadlines
+- Strings, sets, lists, hashes, and sorted sets backed by purpose-built Go data structures
+- Sorted sets implemented with a hash map and skip list
+- Passive and sampled active expiration for strings and sets
+- Configurable LRU, LFU, and insertion-order key eviction
+- AOF command logging and gob-encoded snapshots
+- `MULTI`/`EXEC` transactions with optimistic locking through `WATCH`
+- Primary-replica full and partial synchronization with a bounded replication backlog
+- Multi-stage, non-root Docker image
+
+## Getting started
+
+Requirements: Go 1.25 or newer and, optionally, `redis-cli`.
 
 ```bash
 git clone https://github.com/william1nguyen/valkeydb.git
@@ -25,52 +29,41 @@ make build
 make run
 ```
 
-Connect with redis-cli:
+The default configuration enables authentication. Connect using the password in `config.yaml`:
 
 ```bash
-redis-cli -p 6379
+redis-cli -p 6379 -a secretpassword
 127.0.0.1:6379> PING
 PONG
-127.0.0.1:6379> SET mykey "Hello"
+127.0.0.1:6379> SET greeting "hello"
 OK
-127.0.0.1:6379> GET mykey
-"Hello"
+127.0.0.1:6379> GET greeting
+"hello"
 ```
 
-## Supported Commands
+If port `6379` is unavailable, the server automatically tries the next port and logs the selected address.
 
-| Category    | Commands                                              |
-| ----------- | ----------------------------------------------------- |
-| String      | SET, GET, DEL, TTL, EXPIRE, PING                      |
-| Sorted Set  | ZADD, ZREM, ZSCORE, ZRANK, ZCARD, ZRANGE              |
-| Set         | SADD, SREM, SCARD, SMEMBERS, SISMEMBER, SEXPIRE, STTL |
-| List        | LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE, SORT          |
-| Hash        | HSET, HGET, HDEL, HGETALL, HEXISTS, HLEN              |
-| Pub/Sub     | SUBSCRIBE, UNSUBSCRIBE, PUBLISH                       |
-| Transaction | MULTI, EXEC, DISCARD, WATCH, UNWATCH                  |
-| System      | AUTH, INFO, BGSAVE, KEYS, MONITOR                     |
+## Supported commands
+
+| Category | Commands |
+| --- | --- |
+| String/key | `SET`, `GET`, `DEL`, `EXPIRE`, `PEXPIREAT`, `TTL`, `PING` |
+| Set | `SADD`, `SREM`, `SCARD`, `SMEMBERS`, `SISMEMBER`, `SEXPIRE`, `STTL` |
+| List | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE`, `SORT` |
+| Hash | `HSET`, `HGET`, `HDEL`, `HGETALL`, `HEXISTS`, `HLEN` |
+| Sorted set | `ZADD`, `ZREM`, `ZSCORE`, `ZRANK`, `ZCARD`, `ZRANGE` |
+| Pub/Sub | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` |
+| Transaction | `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH` |
+| Server | `AUTH`, `INFO`, `KEYS`, `MONITOR` |
+| Replication | `REPLCONF`, `PSYNC`, `REPLICAOF`, `REPLICATION` |
+
+Command names are intentionally Redis-like, but complete Redis syntax and semantics are not guaranteed. `SEXPIRE`, `STTL`, and `REPLICATION` are ValkeyDB-specific extensions.
 
 ## Transactions
 
-ValkeyDB supports atomic transactions via `MULTI/EXEC` with optimistic locking via `WATCH`.
+ValkeyDB queues commands between `MULTI` and `EXEC`. `WATCH` marks a transaction dirty when another connection mutates a watched key.
 
-**Basic transaction:**
-
-```bash
-127.0.0.1:6379> MULTI
-OK
-127.0.0.1:6379> SET counter 1
-QUEUED
-127.0.0.1:6379> SET name "alice"
-QUEUED
-127.0.0.1:6379> EXEC
-1) OK
-2) OK
-```
-
-**Optimistic locking with WATCH:**
-
-```bash
+```text
 127.0.0.1:6379> WATCH balance
 OK
 127.0.0.1:6379> MULTI
@@ -78,42 +71,31 @@ OK
 127.0.0.1:6379> SET balance 100
 QUEUED
 127.0.0.1:6379> EXEC
-(nil)   # returns nil if a watched key was modified before EXEC
+1) OK
 ```
 
-| Command   | Description                                                   |
-| --------- | ------------------------------------------------------------- |
-| `MULTI`   | Start a transaction block                                     |
-| `EXEC`    | Execute all queued commands atomically                        |
-| `DISCARD` | Discard all queued commands and exit the transaction          |
-| `WATCH`   | Watch keys; abort transaction if any key changes before EXEC  |
-| `UNWATCH` | Unwatch all watched keys                                      |
+If a watched key changes before `EXEC`, the server returns a null array and does not execute the queue.
 
 ## Replication
 
-ValkeyDB supports primary-replica replication. Start a primary normally, then connect replicas using the API key printed at startup.
-
-**Start primary:**
+Start the primary normally. It logs an ephemeral API key during startup:
 
 ```bash
 make run
 # Server API key: <api-key>
 ```
 
-**Start replica:**
+Join a replica with the primary's listening address and API key:
 
 ```bash
-make replica ADDRESS=<primary-addr> APIKEY=<api-key>
-# e.g. make replica ADDRESS=localhost:6379 APIKEY=abc123
+make replica ADDRESS=localhost:6379 APIKEY=<api-key>
 ```
 
-![Replication Architecture](assets/replication.png)
-
-On connect, the replica performs a **full sync** (RDB snapshot) or **partial sync** (backlog delta on reconnect). Write commands are then streamed in real-time with heartbeat/ACK for liveness tracking.
+The replica attempts a full synchronization on first connection and a backlog-based partial synchronization when possible. It then acknowledges streamed commands and sends heartbeat messages for liveness tracking.
 
 ## Configuration
 
-Edit `config.yaml`:
+ValkeyDB reads `config.yaml` from its working directory.
 
 ```yaml
 server:
@@ -144,54 +126,175 @@ datastructure:
     check_interval: 1
 
 memory:
-  key_limit: 5000000     # unlimited if not set
-  evict_strategy: "lru"  # lru, lfu, evict_first
-
-logging:
-  level: "info"
-  verbose_persistence: true
+  key_limit: 5000000
+  evict_strategy: "lru"
 ```
 
-### Memory Eviction
+Durations are expressed in seconds. Set `auth` to an empty string to disable client authentication. A missing or non-positive `key_limit` disables key-count-based eviction.
 
-When `key_limit` is exceeded, keys are evicted based on `evict_strategy`:
+### Eviction policies
 
-| Strategy        | Behavior                               |
-| --------------- | -------------------------------------- |
-| `lru`         | Evict least recently accessed key      |
-| `lfu`         | Evict key with lowest access frequency |
-| `evict_first` | Evict earliest inserted key            |
+| Strategy | Victim selection |
+| --- | --- |
+| `lru` | Least recently accessed key |
+| `lfu` | Key with the lowest access count |
+| `evict_first` | Earliest tracked insertion |
 
 ## Architecture
 
+### Runtime view
+
+```mermaid
+flowchart LR
+    Client[redis-cli / RESP client]
+    ReplicaClient[Replica node]
+
+    subgraph Process[ValkeyDB process]
+        Main[cmd/valkeydb<br/>composition root]
+        Server[internal/server<br/>TCP accept loop<br/>connection lifecycle]
+        Protocol[internal/protocol<br/>RESP decode / encode]
+        Core[internal/core<br/>command registry and handlers]
+        Conn[ConnContext<br/>auth, transaction, WATCH state]
+        Store[Store facade]
+
+        subgraph Data[internal/datastructure]
+            Dict[String dictionary + TTL]
+            Set[Set + TTL]
+            List[List / deque]
+            Hash[Hash]
+            ZSet[Sorted set / skip list]
+            PubSub[Pub/Sub]
+            Eviction[Eviction metadata]
+        end
+
+        subgraph Durability[internal/persistence]
+            AOF[AOF command log]
+            RDB[gob snapshot]
+        end
+
+        subgraph Repl[internal/replication]
+            Manager[Replication manager]
+            Backlog[Bounded byte backlog]
+            Sync[Full / partial sync]
+        end
+    end
+
+    Main --> Server
+    Main --> Core
+    Main --> Durability
+    Main --> Manager
+
+    Client -->|TCP| Server
+    ReplicaClient <-->|PSYNC + command stream| Server
+    Server <--> Protocol
+    Server --> Conn --> Core --> Store
+    Store --> Dict
+    Store --> Set
+    Store --> List
+    Store --> Hash
+    Store --> ZSet
+    Store --> PubSub
+    Store --> Eviction
+    Core -->|mutating commands| AOF
+    Core -->|propagate| Manager
+    Manager --> Backlog
+    Manager --> Sync
+    RDB -->|startup restore| Store
+    AOF -->|startup replay| Core
 ```
+
+### Write path
+
+```mermaid
+sequenceDiagram
+    participant C as RESP client
+    participant S as TCP server
+    participant P as RESP codec
+    participant H as Command handler
+    participant D as Data structure
+    participant A as AOF
+    participant R as Replication manager
+
+    C->>S: RESP array
+    S->>P: Decode request
+    P-->>S: command + arguments
+    S->>H: Execute through ConnContext
+    H->>D: Apply mutation
+    H->>A: Append encoded command
+    H->>R: Add to backlog and propagate
+    H-->>S: protocol.Value
+    S->>P: Encode response
+    S-->>C: RESP response
+```
+
+The composition root in `cmd/valkeydb` loads configuration, creates the store and persistence engines, restores RDB then AOF state, configures replication, and starts the TCP server. Command handlers are registered through package `init` functions. Each data structure owns its synchronization, while `Store` coordinates cross-cutting concerns such as transactions and eviction.
+
+### Repository layout
+
+```text
 valkeydb/
-├── cmd/valkeydb/          # Entry point
-├── core/
-│   ├── storage/           # Pure data structures
-│   └── store/             # Store interface
-├── command/               # Self-registering commands
-├── protocol/              # RESP protocol
-├── persistence/           # AOF/RDB
-├── server/                # TCP server
-└── config/                # Configuration
+├── cmd/valkeydb/                 # Process entry point and dependency wiring
+├── internal/config/              # YAML configuration
+├── internal/server/              # TCP server and connection modes
+├── internal/protocol/            # RESP value model, decoder, and encoder
+├── internal/core/                # Command dispatch, handlers, transactions, metrics
+│   └── replication/              # Replication command handlers
+├── internal/datastructure/       # In-memory structures, TTL, eviction, Pub/Sub
+├── internal/persistence/         # AOF and gob snapshot implementations
+├── internal/replication/         # Primary/replica transport, backlog, liveness
+├── assets/                       # Documentation assets
+├── config.yaml
+├── Dockerfile
+└── Makefile
 ```
+
+## Quality checks
+
+```bash
+make test
+go vet ./...
+go test -race ./...
+```
+
+The race-enabled suite is expected to pass, including concurrent `WATCH` and write coverage.
+
+## Current limitations
+
+- A key is not represented by one globally typed value, so Redis `WRONGTYPE` behavior and cross-type replacement are incomplete.
+- Persistence and replication do not yet cover every mutating command or sorted sets; they must not be treated as lossless.
+- Full replication sync does not yet provide a proven point-in-time consistency boundary under concurrent writes.
+- Pub/Sub subscription state is process-global instead of connection-local, and subscribed connections cannot yet process the full Redis Pub/Sub command flow.
+- `BGSAVE` snapshot execution and graceful signal-driven shutdown are not implemented end to end.
+- RESP decoding needs explicit request-size, nesting-depth, and malformed-frame limits before exposure to untrusted networks.
+- Integration, persistence recovery, replication, protocol, server, and fuzz tests are still missing.
+- The current Docker runtime needs a writable persistence directory/configuration before AOF and RDB can be enabled under its non-root user.
+
+## Roadmap to production-grade behavior
+
+- [x] Fix all race-detector failures and make `WATCH` state synchronization race-free
+- [x] Route normal commands and `EXEC` through one ordering boundary so transaction batches cannot interleave with other clients
+- [ ] Introduce a single typed keyspace with consistent `DEL`, TTL, eviction, versioning, and `WRONGTYPE` semantics
+- [ ] Centralize command metadata so write classification, validation, AOF, and replication cannot drift
+- [ ] Make all mutations durable and ordered, including list pops, sorted sets, expiration, and eviction
+- [ ] Add atomic snapshot/rewrite boundaries and crash-safe temp-file replacement with error propagation
+- [ ] Make replication ordered and gap-free during full sync; test reconnect and backlog rollover
+- [ ] Move Pub/Sub state into `ConnContext` and support commands while subscribed
+- [ ] Add graceful shutdown, cancellation for background goroutines, and configuration validation
+- [ ] Add protocol limits, safer authentication handling, structured logging, and secret redaction
+- [ ] Add table-driven unit tests, TCP integration tests, restart/recovery tests, replication tests, fuzzing, benchmarks, and CI quality gates
+- [ ] Document the exact compatibility matrix and behavioral differences from Redis/Valkey
+- [ ] Add cluster mode only after single-node durability and replication invariants are proven
 
 ## Docker
 
+Build the image with:
+
 ```bash
 docker build -t valkeydb:latest .
-docker run --rm -p 6379:6379 valkeydb:latest
 ```
 
-## TODO
+The image runs as a non-root user. Before enabling AOF/RDB in a container, configure their filenames under a mounted writable directory; this wiring is still part of the roadmap.
 
-- [X] RESP protocol
-- [X] Dictionary, Set, List, Hash
-- [X] Sorted Sets (ZADD, ZRANGE, ZRANK)
-- [X] AOF and RDB persistence
-- [X] TTL and key expiration
-- [X] Memory eviction (LRU/LFU)
-- [X] Transaction support (MULTI/EXEC)
-- [X] Replication (primary-replica)
-- [ ] Cluster mode
+## License
+
+See [LICENSE](LICENSE).

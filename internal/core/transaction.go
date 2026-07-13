@@ -37,36 +37,49 @@ func (transaction *TransactionState) Enqueue(name string, args []protocol.Value)
 }
 
 type watchEntry struct {
-	connID  uint64
-	isDirty *bool
+	connID uint64
 }
 
 type WatchRegistry struct {
 	mutex    sync.Mutex
 	watchers map[string][]watchEntry
+	dirty    map[uint64]bool
 }
 
 var globalWatch = &WatchRegistry{
 	watchers: make(map[string][]watchEntry),
+	dirty:    make(map[uint64]bool),
 }
 
-func (registry *WatchRegistry) Watch(key string, connID uint64, isDirty *bool) {
+func (registry *WatchRegistry) Watch(key string, connID uint64) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
-	registry.watchers[key] = append(registry.watchers[key], watchEntry{connID: connID, isDirty: isDirty})
+	for _, entry := range registry.watchers[key] {
+		if entry.connID == connID {
+			return
+		}
+	}
+	registry.watchers[key] = append(registry.watchers[key], watchEntry{connID: connID})
 }
 
 func (registry *WatchRegistry) Notify(key string) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
 	for _, entry := range registry.watchers[key] {
-		*entry.isDirty = true
+		registry.dirty[entry.connID] = true
 	}
+}
+
+func (registry *WatchRegistry) IsDirty(connID uint64) bool {
+	registry.mutex.Lock()
+	defer registry.mutex.Unlock()
+	return registry.dirty[connID]
 }
 
 func (registry *WatchRegistry) Unwatch(connID uint64) {
 	registry.mutex.Lock()
 	defer registry.mutex.Unlock()
+	delete(registry.dirty, connID)
 	for key, entries := range registry.watchers {
 		filtered := entries[:0]
 		for _, entry := range entries {
@@ -112,18 +125,21 @@ func handleExec(connContext *ConnContext, _ []protocol.Value) protocol.Value {
 		connContext.Transaction.Reset()
 	}()
 
-	if connContext.Transaction.Dirty {
-		return protocol.Value{Type: protocol.TypeArray, Array: nil}
-	}
-
 	connContext.Store.ExecMu.Lock()
 	defer connContext.Store.ExecMu.Unlock()
+
+	// Check WATCH after acquiring the transaction boundary. Any ordinary
+	// command that started first has now completed its mutation notification;
+	// commands that start later cannot run until this EXEC finishes.
+	if connContext.Transaction.Dirty || globalWatch.IsDirty(connContext.ID) {
+		return protocol.Value{Type: protocol.TypeArray, Array: nil}
+	}
 
 	connContext.Transaction.Status = TransactionIdle
 
 	results := make([]protocol.Value, len(connContext.Transaction.Queue))
 	for i, cmd := range connContext.Transaction.Queue {
-		results[i] = Execute(connContext, cmd.Name, cmd.Args)
+		results[i] = executeCommand(connContext, cmd.Name, cmd.Args)
 	}
 	return protocol.Value{Type: protocol.TypeArray, Array: results}
 }
@@ -150,7 +166,7 @@ func handleWatch(connContext *ConnContext, args []protocol.Value) protocol.Value
 	for _, arg := range args {
 		key := arg.String
 		connContext.Transaction.Watches[key] = connContext.Store.Dictionary.Version(key)
-		globalWatch.Watch(key, connContext.ID, &connContext.Transaction.Dirty)
+		globalWatch.Watch(key, connContext.ID)
 	}
 	return okReply()
 }

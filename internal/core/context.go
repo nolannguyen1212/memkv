@@ -175,6 +175,19 @@ func Execute(connContext *ConnContext, name string, args []protocol.Value) proto
 	if connContext.Connection != nil && connContext.Replication != nil && connContext.Replication.IsReplica() && writeCommands[name] {
 		return protocol.Value{Type: protocol.TypeError, String: "READONLY You can't write against a read only replica."}
 	}
+
+	// EXEC owns the exclusive lock itself because it must keep that lock while
+	// dispatching every queued command. All other commands share the same
+	// boundary and therefore cannot run in the middle of an EXEC batch.
+	if name == "EXEC" {
+		return executeCommand(connContext, name, args)
+	}
+	connContext.Store.ExecMu.RLock()
+	defer connContext.Store.ExecMu.RUnlock()
+	return executeCommand(connContext, name, args)
+}
+
+func executeCommand(connContext *ConnContext, name string, args []protocol.Value) protocol.Value {
 	handler, exists := Lookup(name)
 	if !exists {
 		return errorReply("ERR unknown command '" + name + "'")

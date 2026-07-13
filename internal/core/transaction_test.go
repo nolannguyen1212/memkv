@@ -1,6 +1,8 @@
 package core
 
 import (
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -426,6 +428,71 @@ func TestConcurrentWritesAndWatch(t *testing.T) {
 	}
 
 	<-done
+}
+
+func TestExecDoesNotAllowOtherCommandsToInterleave(t *testing.T) {
+	base := newTestBase()
+	transactionConn := newTestConn(base)
+	otherConn := newTestConn(base)
+
+	// Use per-test command names because the command registry is process-wide.
+	suffix := fmt.Sprintf("%d", transactionConn.ID)
+	blockCommand := "TEST_TX_BLOCK_" + suffix
+	otherCommand := "TEST_TX_OTHER_" + suffix
+	transactionEntered := make(chan struct{})
+	releaseTransaction := make(chan struct{})
+	otherEntered := make(chan struct{})
+	var transactionCalls atomic.Int32
+
+	Register(blockCommand, func(_ *ConnContext, _ []protocol.Value) protocol.Value {
+		if transactionCalls.Add(1) == 1 {
+			close(transactionEntered)
+		}
+		<-releaseTransaction
+		return okReply()
+	})
+	Register(otherCommand, func(_ *ConnContext, _ []protocol.Value) protocol.Value {
+		close(otherEntered)
+		return okReply()
+	})
+
+	exec(transactionConn, "MULTI")
+	exec(transactionConn, blockCommand)
+	execDone := make(chan struct{})
+	go func() {
+		exec(transactionConn, "EXEC")
+		close(execDone)
+	}()
+
+	select {
+	case <-transactionEntered:
+	case <-time.After(time.Second):
+		t.Fatal("transaction command did not start")
+	}
+
+	otherDone := make(chan struct{})
+	go func() {
+		exec(otherConn, otherCommand)
+		close(otherDone)
+	}()
+
+	select {
+	case <-otherEntered:
+		t.Fatal("command from another connection interleaved with EXEC")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(releaseTransaction)
+	select {
+	case <-execDone:
+	case <-time.After(time.Second):
+		t.Fatal("EXEC did not finish")
+	}
+	select {
+	case <-otherDone:
+	case <-time.After(time.Second):
+		t.Fatal("blocked command did not resume after EXEC")
+	}
 }
 
 func TestDatastructures(t *testing.T) {

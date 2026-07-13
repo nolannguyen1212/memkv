@@ -16,7 +16,10 @@ type Store struct {
 	SortedSet  *datastructure.SortedSet
 	PubSub     *datastructure.PubSub
 	Eviction   *datastructure.EvictionManager
-	ExecMu     sync.Mutex
+	// ExecMu is the ordering boundary between ordinary commands and EXEC.
+	// Commands take a read lock, while EXEC holds the write lock for the whole
+	// queued batch so no command from another connection can interleave with it.
+	ExecMu sync.RWMutex
 }
 
 type StoreConfig struct {
