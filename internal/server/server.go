@@ -123,11 +123,15 @@ func (server *Server) startBackgroundTasks() {
 
 func (server *Server) rewriteAOF() {
 	aofFilename := config.Global.Persistence.AOF.Filename
+	server.ctx.Store.ExecMu.Lock()
+	defer server.ctx.Store.ExecMu.Unlock()
 	err := server.aof.RewriteAll(
 		server.ctx.Store.Dictionary.Snapshot(),
 		server.ctx.Store.Set.Snapshot(),
 		server.ctx.Store.List.Snapshot(),
 		server.ctx.Store.Hash.Snapshot(),
+		server.ctx.Store.SortedSet.Snapshot(),
+		server.ctx.Store.Keyspace.Snapshot(),
 		aofFilename,
 	)
 	if err != nil {
@@ -189,13 +193,19 @@ func (server *Server) saveRDBSnapshot() {
 		return
 	}
 
+	server.ctx.Store.ExecMu.Lock()
 	snapshot := persistence.Snapshot{
-		DictData: server.ctx.Store.Dictionary.Snapshot(),
-		SetData:  server.ctx.Store.Set.Snapshot(),
-		ListData: server.ctx.Store.List.Snapshot(),
-		HashData: server.ctx.Store.Hash.Snapshot(),
+		KeyspaceData:  server.ctx.Store.Keyspace.Snapshot(),
+		DictData:      server.ctx.Store.Dictionary.Snapshot(),
+		SetData:       server.ctx.Store.Set.Snapshot(),
+		ListData:      server.ctx.Store.List.Snapshot(),
+		HashData:      server.ctx.Store.Hash.Snapshot(),
+		SortedSetData: server.ctx.Store.SortedSet.Snapshot(),
 	}
-	_ = server.rdb.Save(snapshot, config.Global.Persistence.RDB.Filename)
+	server.ctx.Store.ExecMu.Unlock()
+	if err := server.rdb.Save(snapshot, config.Global.Persistence.RDB.Filename); err != nil {
+		log.Printf("RDB save error: %v", err)
+	}
 }
 
 func (server *Server) closePersistence() {

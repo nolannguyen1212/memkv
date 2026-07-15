@@ -2,11 +2,13 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 
 	"github.com/william1nguyen/valkeydb/internal/config"
 	"github.com/william1nguyen/valkeydb/internal/core"
 	_ "github.com/william1nguyen/valkeydb/internal/core/replication"
+	"github.com/william1nguyen/valkeydb/internal/datastructure"
 	"github.com/william1nguyen/valkeydb/internal/persistence"
 	"github.com/william1nguyen/valkeydb/internal/protocol"
 	"github.com/william1nguyen/valkeydb/internal/replication"
@@ -64,8 +66,12 @@ func main() {
 	ctx := core.NewContext(store, aof, replicationManager)
 
 	replicationManager.SetReplaying(true)
-	loadRDBSnapshot(rdb, store)
-	loadAOFCommands(aof, ctx)
+	if err := loadRDBSnapshot(rdb, store); err != nil {
+		log.Fatalf("Failed to restore RDB: %v", err)
+	}
+	if err := loadAOFCommands(aof, ctx); err != nil {
+		log.Fatalf("Failed to replay AOF: %v", err)
+	}
 	replicationManager.SetReplaying(false)
 
 	stopLiveness := make(chan struct{})
@@ -88,24 +94,40 @@ func main() {
 	}
 }
 
-func loadRDBSnapshot(rdb *persistence.RDB, store *core.Store) {
+func loadRDBSnapshot(rdb *persistence.RDB, store *core.Store) error {
 	snapshot, err := rdb.Load(config.Global.Persistence.RDB.Filename)
 	if err != nil {
-		log.Printf("RDB load error: %v", err)
-		return
+		return err
 	}
 	if snapshot == nil {
-		return
+		return nil
+	}
+	for key, metadata := range snapshot.KeyspaceData {
+		store.Keyspace.Restore(key, metadata)
 	}
 
 	for key, entry := range snapshot.DictData {
+		if len(snapshot.KeyspaceData) == 0 {
+			if !store.PrepareWrite(key, datastructure.KeyTypeString, false) {
+				continue
+			}
+		} else if exists, valid := store.HasType(key, datastructure.KeyTypeString); !exists || !valid {
+			continue
+		}
 		store.Dictionary.Set(key, entry.Value, 0)
-		if !entry.ExpiredAt.IsZero() {
-			store.Dictionary.ExpireAt(key, entry.ExpiredAt)
+		if len(snapshot.KeyspaceData) == 0 && !entry.ExpiredAt.IsZero() {
+			store.Keyspace.ExpireAt(key, entry.ExpiredAt)
 		}
 	}
 
 	for key, entry := range snapshot.SetData {
+		if len(snapshot.KeyspaceData) == 0 {
+			if !store.PrepareWrite(key, datastructure.KeyTypeSet, false) {
+				continue
+			}
+		} else if exists, valid := store.HasType(key, datastructure.KeyTypeSet); !exists || !valid {
+			continue
+		}
 		if len(entry.Members) == 0 {
 			continue
 		}
@@ -114,30 +136,64 @@ func loadRDBSnapshot(rdb *persistence.RDB, store *core.Store) {
 			members = append(members, member)
 		}
 		store.Set.Add(key, members...)
-		if !entry.ExpiredAt.IsZero() {
-			store.Set.ExpireAt(key, entry.ExpiredAt)
+		if len(snapshot.KeyspaceData) == 0 && !entry.ExpiredAt.IsZero() {
+			store.Keyspace.ExpireAt(key, entry.ExpiredAt)
 		}
 	}
 
 	for key, values := range snapshot.ListData {
+		if len(snapshot.KeyspaceData) == 0 {
+			if !store.PrepareWrite(key, datastructure.KeyTypeList, false) {
+				continue
+			}
+		} else if exists, valid := store.HasType(key, datastructure.KeyTypeList); !exists || !valid {
+			continue
+		}
 		if len(values) > 0 {
 			store.List.RightPush(key, values...)
 		}
 	}
 
 	for key, hash := range snapshot.HashData {
+		if len(snapshot.KeyspaceData) == 0 {
+			if !store.PrepareWrite(key, datastructure.KeyTypeHash, false) {
+				continue
+			}
+		} else if exists, valid := store.HasType(key, datastructure.KeyTypeHash); !exists || !valid {
+			continue
+		}
 		for field, value := range hash {
 			store.Hash.Set(key, field, value)
 		}
 	}
 
-	log.Printf("RDB loaded: %d dict, %d set, %d list, %d hash keys",
-		len(snapshot.DictData), len(snapshot.SetData), len(snapshot.ListData), len(snapshot.HashData))
+	for key, members := range snapshot.SortedSetData {
+		if len(snapshot.KeyspaceData) == 0 {
+			if !store.PrepareWrite(key, datastructure.KeyTypeSortedSet, false) {
+				continue
+			}
+		} else if exists, valid := store.HasType(key, datastructure.KeyTypeSortedSet); !exists || !valid {
+			continue
+		}
+		items := make([]datastructure.ScoreMember, 0, len(members))
+		for member, score := range members {
+			items = append(items, datastructure.ScoreMember{Member: member, Score: score})
+		}
+		store.SortedSet.Add(key, items...)
+	}
+
+	log.Printf("RDB loaded: %d string, %d set, %d list, %d hash, %d sorted-set keys",
+		len(snapshot.DictData), len(snapshot.SetData), len(snapshot.ListData), len(snapshot.HashData), len(snapshot.SortedSetData))
+	return nil
 }
 
-func loadAOFCommands(aof *persistence.AOF, ctx *core.Context) {
+func loadAOFCommands(aof *persistence.AOF, ctx *core.Context) error {
 	connContext := core.NewConnContext(ctx, nil)
-	aof.Load(config.Global.Persistence.AOF.Filename, func(cmd string, args []protocol.Value) {
-		core.Execute(connContext, cmd, args)
+	return aof.Load(config.Global.Persistence.AOF.Filename, func(cmd string, args []protocol.Value) error {
+		result := core.Execute(connContext, cmd, args)
+		if result.Type == protocol.TypeError {
+			return fmt.Errorf("%s", result.String)
+		}
+		return nil
 	})
 }

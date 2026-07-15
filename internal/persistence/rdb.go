@@ -2,7 +2,6 @@ package persistence
 
 import (
 	"encoding/gob"
-	"io"
 	"os"
 	"sync"
 
@@ -10,10 +9,12 @@ import (
 )
 
 type Snapshot struct {
-	DictData map[string]datastructure.Entry
-	SetData  map[string]datastructure.SetEntry
-	ListData map[string][]string
-	HashData map[string]map[string]string
+	KeyspaceData  map[string]datastructure.KeyMetadata
+	DictData      map[string]datastructure.Entry
+	SetData       map[string]datastructure.SetEntry
+	ListData      map[string][]string
+	HashData      map[string]map[string]string
+	SortedSetData map[string]map[string]float64
 }
 
 type RDB struct {
@@ -43,13 +44,23 @@ func (r *RDB) Save(snapshot Snapshot, path string) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	f, err := os.Create(path)
+	temp := path + tempSuffix
+	f, err := os.Create(temp)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	return gob.NewEncoder(f).Encode(snapshot)
+	if err := gob.NewEncoder(f).Encode(snapshot); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temp, path)
 }
 
 func (r *RDB) Load(path string) (*Snapshot, error) {
@@ -76,9 +87,6 @@ func (r *RDB) Load(path string) (*Snapshot, error) {
 
 	var snapshot Snapshot
 	if err := gob.NewDecoder(f).Decode(&snapshot); err != nil {
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			return nil, nil
-		}
 		return nil, err
 	}
 	return &snapshot, nil
