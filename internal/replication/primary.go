@@ -3,6 +3,7 @@ package replication
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strconv"
@@ -13,6 +14,13 @@ import (
 )
 
 func (manager *Manager) HandlePSYNC(connection net.Conn, replicaAddress, replicaID string, offset int64, getRDB func() []byte) error {
+	// Keep backlog inspection, snapshot transfer, and replica registration in
+	// the same ordering boundary as propagation. Otherwise writes that arrive
+	// between sending the backlog/snapshot and AddReplica are lost by the new
+	// replica.
+	manager.propagateMutex.Lock()
+	defer manager.propagateMutex.Unlock()
+
 	replicaConnection := &ReplicaConnection{
 		ID:         generateHex(8),
 		Address:    replicaAddress,
@@ -24,14 +32,12 @@ func (manager *Manager) HandlePSYNC(connection net.Conn, replicaAddress, replica
 	manager.mutex.RUnlock()
 
 	if replicaID != "?" && replicaID == streamID && manager.backlog.CanServe(offset) {
-		manager.partialSync(connection, replicaConnection, offset)
-	} else {
-		manager.fullSync(connection, replicaConnection, getRDB)
+		return manager.partialSync(connection, replicaConnection, offset)
 	}
-	return nil
+	return manager.fullSync(connection, replicaConnection, getRDB)
 }
 
-func (manager *Manager) fullSync(connection net.Conn, replicaConnection *ReplicaConnection, getRDB func() []byte) {
+func (manager *Manager) fullSync(connection net.Conn, replicaConnection *ReplicaConnection, getRDB func() []byte) error {
 	manager.mutex.RLock()
 	streamID := manager.primaryStreamID
 	manager.mutex.RUnlock()
@@ -41,16 +47,25 @@ func (manager *Manager) fullSync(connection net.Conn, replicaConnection *Replica
 
 	log.Printf("replication: full sync to replica %s (rdb=%d bytes, offset=%d)", replicaConnection.Address, len(rdbData), offset)
 
-	fmt.Fprintf(connection, "+FULLRESYNC %s %d\r\n", streamID, offset)
-	fmt.Fprintf(connection, "$%d\r\n", len(rdbData))
-	connection.Write(rdbData)
-	connection.Write([]byte("\r\n"))
+	if _, err := fmt.Fprintf(connection, "+FULLRESYNC %s %d\r\n", streamID, offset); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(connection, "$%d\r\n", len(rdbData)); err != nil {
+		return err
+	}
+	if err := writeAll(connection, rdbData); err != nil {
+		return err
+	}
+	if err := writeAll(connection, []byte("\r\n")); err != nil {
+		return err
+	}
 
 	manager.AddReplica(replicaConnection)
 	go manager.readReplicaCommands(connection, replicaConnection)
+	return nil
 }
 
-func (manager *Manager) partialSync(connection net.Conn, replicaConnection *ReplicaConnection, fromOffset int64) {
+func (manager *Manager) partialSync(connection net.Conn, replicaConnection *ReplicaConnection, fromOffset int64) error {
 	manager.mutex.RLock()
 	streamID := manager.primaryStreamID
 	manager.mutex.RUnlock()
@@ -58,13 +73,32 @@ func (manager *Manager) partialSync(connection net.Conn, replicaConnection *Repl
 	data := manager.backlog.ReadFrom(fromOffset)
 	log.Printf("replication: partial sync to replica %s (from offset=%d, delta=%d bytes)", replicaConnection.Address, fromOffset, len(data))
 
-	fmt.Fprintf(connection, "+CONTINUE %s\r\n", streamID)
+	if _, err := fmt.Fprintf(connection, "+CONTINUE %s\r\n", streamID); err != nil {
+		return err
+	}
 	if len(data) > 0 {
-		connection.Write(data)
+		if err := writeAll(connection, data); err != nil {
+			return err
+		}
 	}
 
 	manager.AddReplica(replicaConnection)
 	go manager.readReplicaCommands(connection, replicaConnection)
+	return nil
+}
+
+func writeAll(connection net.Conn, data []byte) error {
+	for len(data) > 0 {
+		written, err := connection.Write(data)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	return nil
 }
 
 func (manager *Manager) readReplicaCommands(connection net.Conn, replicaConnection *ReplicaConnection) {

@@ -32,8 +32,7 @@ type ReplicaConnection struct {
 func (replicaConnection *ReplicaConnection) Send(data []byte) error {
 	replicaConnection.mutex.Lock()
 	defer replicaConnection.mutex.Unlock()
-	_, err := replicaConnection.Connection.Write(data)
-	return err
+	return writeAll(replicaConnection.Connection, data)
 }
 
 type ManagerConfig struct {
@@ -52,9 +51,11 @@ type Manager struct {
 	replicas             []*ReplicaConnection
 	replicaLastHeartbeat map[string]time.Time
 	replaying            atomic.Bool
+	replicationOffset    atomic.Int64
 	stopReplication      chan struct{}
 	config               ManagerConfig
 	mutex                sync.RWMutex
+	propagateMutex       sync.Mutex
 }
 
 func NewManager(config ManagerConfig) *Manager {
@@ -90,6 +91,8 @@ func (manager *Manager) Propagate(data []byte) {
 	if !manager.IsPrimary() || manager.replaying.Load() {
 		return
 	}
+	manager.propagateMutex.Lock()
+	defer manager.propagateMutex.Unlock()
 
 	manager.backlog.Write(data)
 
@@ -101,11 +104,9 @@ func (manager *Manager) Propagate(data []byte) {
 	log.Printf("[PRIMARY] Propagate to %d replica(s): %s", len(snapshot), strings.TrimRight(string(data), "\r\n"))
 
 	for _, replica := range snapshot {
-		go func(replicaConnection *ReplicaConnection) {
-			if err := replicaConnection.Send(data); err != nil {
-				manager.RemoveReplica(replicaConnection.ID)
-			}
-		}(replica)
+		if err := replica.Send(data); err != nil {
+			manager.RemoveReplica(replica.ID)
+		}
 	}
 }
 

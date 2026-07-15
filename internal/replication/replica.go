@@ -70,7 +70,7 @@ func (manager *Manager) ConnectToPrimary(primaryAddress, apiKey string, dispatch
 	replicationID := manager.primaryStreamID
 	manager.mutex.RUnlock()
 
-	currentOffset := manager.backlog.CurrentOffset()
+	currentOffset := manager.replicationOffset.Load()
 	psyncID, psyncOffset := replicationID, strconv.FormatInt(currentOffset, 10)
 	if replicationID == "" {
 		psyncID, psyncOffset = "?", "-1"
@@ -93,6 +93,11 @@ func (manager *Manager) ConnectToPrimary(primaryAddress, apiKey string, dispatch
 			manager.mutex.Lock()
 			manager.primaryStreamID = parts[1]
 			manager.mutex.Unlock()
+		}
+		if len(parts) >= 3 {
+			if offset, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+				manager.replicationOffset.Store(offset)
+			}
 		}
 		if err := manager.receiveRDB(reader, dispatch); err != nil {
 			return fmt.Errorf("receive RDB: %w", err)
@@ -129,7 +134,12 @@ func (manager *Manager) receiveRDB(reader *bufio.Reader, dispatch func(string, [
 	if _, err := io.ReadFull(reader, data); err != nil {
 		return err
 	}
-	reader.ReadString('\n')
+	if trailer, err := reader.ReadString('\n'); err != nil {
+		return err
+	} else if trailer != "\r\n" {
+		return fmt.Errorf("invalid RDB trailer")
+	}
+	dispatch("FLUSHALL", nil)
 
 	dataReader := bufio.NewReader(bytes.NewReader(data))
 	for {
@@ -157,13 +167,15 @@ func (manager *Manager) streamLoop(writer *primaryConnectionWriter, reader *bufi
 			continue
 		}
 
-		manager.backlog.Write([]byte(protocol.Encode(value)))
+		encoded := []byte(protocol.Encode(value))
+		manager.backlog.Write(encoded)
+		manager.replicationOffset.Add(int64(len(encoded)))
 
 		cmd := strings.ToUpper(value.Array[0].String)
 		log.Printf("[REPLICA] Received from primary: %s", protocol.Encode(value))
 		dispatch(cmd, value.Array[1:])
 
-		offset := manager.backlog.CurrentOffset()
+		offset := manager.replicationOffset.Load()
 		writer.Send("REPLCONF", "ACK", strconv.FormatInt(offset, 10))
 	}
 }
