@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/william1nguyen/valkeydb/internal/datastructure"
 	"github.com/william1nguyen/valkeydb/internal/protocol"
 )
 
@@ -24,10 +25,15 @@ func handleSadd(connContext *ConnContext, args []protocol.Value) protocol.Value 
 
 	key := args[0].String
 	members := extractStrings(args[1:])
+	if !connContext.Store.PrepareWrite(key, datastructure.KeyTypeSet, false) {
+		return wrongTypeError()
+	}
 	count := connContext.Store.Set.Add(key, members...)
 
 	connContext.OnKeyWrite(key)
-	connContext.AppendAOF(buildBulkArray(append([]string{"SADD", key}, members...)...))
+	if err := connContext.AppendAOF(buildBulkArray(append([]string{"SADD", key}, members...)...)); err != nil {
+		return persistenceError()
+	}
 
 	return intReply(int64(count))
 }
@@ -38,11 +44,21 @@ func handleSrem(connContext *ConnContext, args []protocol.Value) protocol.Value 
 	}
 
 	key := args[0].String
+	if _, valid := connContext.Store.HasType(key, datastructure.KeyTypeSet); !valid {
+		return wrongTypeError()
+	}
 	members := extractStrings(args[1:])
 	count := connContext.Store.Set.Remove(key, members...)
 
-	connContext.OnKeyMutate(key)
-	connContext.AppendAOF(buildBulkArray(append([]string{"SREM", key}, members...)...))
+	if count > 0 {
+		connContext.OnKeyMutate(key)
+		if connContext.Store.Set.Cardinality(key) == 0 {
+			connContext.Store.RemoveEmptyKey(key, datastructure.KeyTypeSet)
+		}
+		if err := connContext.AppendAOF(buildBulkArray(append([]string{"SREM", key}, members...)...)); err != nil {
+			return persistenceError()
+		}
+	}
 
 	return intReply(int64(count))
 }
@@ -52,8 +68,12 @@ func handleSmembers(connContext *ConnContext, args []protocol.Value) protocol.Va
 		return wrongArgCountError("smembers")
 	}
 
-	connContext.OnKeyRead(args[0].String)
-	members, exists := connContext.Store.Set.Members(args[0].String)
+	key := args[0].String
+	if _, valid := connContext.Store.HasType(key, datastructure.KeyTypeSet); !valid {
+		return wrongTypeError()
+	}
+	connContext.OnKeyRead(key)
+	members, exists := connContext.Store.Set.Members(key)
 	if !exists {
 		return nullArrayReply()
 	}
@@ -70,8 +90,12 @@ func handleSismember(connContext *ConnContext, args []protocol.Value) protocol.V
 		return wrongArgCountError("sismember")
 	}
 
-	connContext.OnKeyRead(args[0].String)
-	if connContext.Store.Set.IsMember(args[0].String, args[1].String) {
+	key := args[0].String
+	if _, valid := connContext.Store.HasType(key, datastructure.KeyTypeSet); !valid {
+		return wrongTypeError()
+	}
+	connContext.OnKeyRead(key)
+	if connContext.Store.Set.IsMember(key, args[1].String) {
 		return intReply(1)
 	}
 	return intReply(0)
@@ -82,8 +106,12 @@ func handleScard(connContext *ConnContext, args []protocol.Value) protocol.Value
 		return wrongArgCountError("scard")
 	}
 
-	connContext.OnKeyRead(args[0].String)
-	return intReply(int64(connContext.Store.Set.Cardinality(args[0].String)))
+	key := args[0].String
+	if _, valid := connContext.Store.HasType(key, datastructure.KeyTypeSet); !valid {
+		return wrongTypeError()
+	}
+	connContext.OnKeyRead(key)
+	return intReply(int64(connContext.Store.Set.Cardinality(key)))
 }
 
 func handleSexpire(connContext *ConnContext, args []protocol.Value) protocol.Value {
@@ -92,13 +120,23 @@ func handleSexpire(connContext *ConnContext, args []protocol.Value) protocol.Val
 	}
 
 	key := args[0].String
+	if exists, valid := connContext.Store.HasType(key, datastructure.KeyTypeSet); !valid {
+		return wrongTypeError()
+	} else if !exists {
+		return intReply(0)
+	}
 	seconds, err := strconv.Atoi(args[1].String)
 	if err != nil {
 		return notIntegerError()
 	}
 
-	if !connContext.Store.Set.Expire(key, time.Duration(seconds)*time.Second) {
+	expAt := time.Now().Add(time.Duration(seconds) * time.Second)
+	if !connContext.Store.Keyspace.ExpireAt(key, expAt) {
 		return intReply(0)
+	}
+	connContext.OnKeyMutate(key)
+	if err := connContext.AppendAOF(buildBulkArray("PEXPIREAT", key, strconv.FormatInt(expAt.UnixMilli(), 10))); err != nil {
+		return persistenceError()
 	}
 	return intReply(1)
 }
@@ -108,8 +146,12 @@ func handleSttl(connContext *ConnContext, args []protocol.Value) protocol.Value 
 		return wrongArgCountError("sttl")
 	}
 
-	connContext.OnKeyRead(args[0].String)
-	return intReply(connContext.Store.Set.TTL(args[0].String))
+	key := args[0].String
+	if _, valid := connContext.Store.HasType(key, datastructure.KeyTypeSet); !valid {
+		return wrongTypeError()
+	}
+	connContext.OnKeyRead(key)
+	return intReply(connContext.Store.Keyspace.TTL(key))
 }
 
 // extractStrings converts a slice of protocol.Value to a slice of strings.

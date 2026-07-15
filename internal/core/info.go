@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/william1nguyen/valkeydb/internal/datastructure"
 	"github.com/william1nguyen/valkeydb/internal/protocol"
 )
 
@@ -92,11 +93,13 @@ func buildInfo(connContext *ConnContext, section string) string {
 		lines = append(lines, "total_commands_processed:"+strconv.FormatUint(GetTotalCommands(), 10))
 	}
 	if show("keyspace") {
-		dictCount := len(connContext.Store.Dictionary.Snapshot())
-		setCount := len(connContext.Store.Set.Snapshot())
-		listCount := len(connContext.Store.List.Snapshot())
-		hashCount := len(connContext.Store.Hash.Snapshot())
-		lines = append(lines, fmt.Sprintf("db0:dict=%d,set=%d,list=%d,hash=%d", dictCount, setCount, listCount, hashCount))
+		counts := make(map[datastructure.KeyType]int)
+		for _, metadata := range connContext.Store.Keyspace.Snapshot() {
+			counts[metadata.Type]++
+		}
+		lines = append(lines, fmt.Sprintf("db0:string=%d,set=%d,list=%d,hash=%d,zset=%d",
+			counts[datastructure.KeyTypeString], counts[datastructure.KeyTypeSet], counts[datastructure.KeyTypeList],
+			counts[datastructure.KeyTypeHash], counts[datastructure.KeyTypeSortedSet]))
 	}
 	if show("replication") && connContext.Replication != nil {
 		lines = append(lines, connContext.Replication.Info())
@@ -121,22 +124,7 @@ func handleKeys(connContext *ConnContext, args []protocol.Value) protocol.Value 
 	pattern := args[0].String
 	var keys []string
 
-	for key := range connContext.Store.Dictionary.Snapshot() {
-		if matched, _ := filepath.Match(pattern, key); matched {
-			keys = append(keys, key)
-		}
-	}
-	for key := range connContext.Store.Set.Snapshot() {
-		if matched, _ := filepath.Match(pattern, key); matched {
-			keys = append(keys, key)
-		}
-	}
-	for key := range connContext.Store.List.Snapshot() {
-		if matched, _ := filepath.Match(pattern, key); matched {
-			keys = append(keys, key)
-		}
-	}
-	for key := range connContext.Store.Hash.Snapshot() {
+	for key := range connContext.Store.Keyspace.Snapshot() {
 		if matched, _ := filepath.Match(pattern, key); matched {
 			keys = append(keys, key)
 		}

@@ -50,6 +50,14 @@ func syntaxError() protocol.Value {
 	return errorReply("ERR syntax error")
 }
 
+func wrongTypeError() protocol.Value {
+	return errorReply("WRONGTYPE Operation against a key holding the wrong kind of value")
+}
+
+func persistenceError() protocol.Value {
+	return errorReply("MISCONF Persistence failed; writes are disabled to prevent data loss")
+}
+
 func buildBulkArray(items ...string) protocol.Value {
 	arr := make([]protocol.Value, len(items))
 	for i, item := range items {

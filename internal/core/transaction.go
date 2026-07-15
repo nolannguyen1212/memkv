@@ -134,6 +134,11 @@ func handleExec(connContext *ConnContext, _ []protocol.Value) protocol.Value {
 	if connContext.Transaction.Dirty || globalWatch.IsDirty(connContext.ID) {
 		return protocol.Value{Type: protocol.TypeArray, Array: nil}
 	}
+	for key, version := range connContext.Transaction.Watches {
+		if connContext.Store.Keyspace.Version(key) != version {
+			return protocol.Value{Type: protocol.TypeArray, Array: nil}
+		}
+	}
 
 	connContext.Transaction.Status = TransactionIdle
 
@@ -165,7 +170,7 @@ func handleWatch(connContext *ConnContext, args []protocol.Value) protocol.Value
 	}
 	for _, arg := range args {
 		key := arg.String
-		connContext.Transaction.Watches[key] = connContext.Store.Dictionary.Version(key)
+		connContext.Transaction.Watches[key] = connContext.Store.Keyspace.Version(key)
 		globalWatch.Watch(key, connContext.ID)
 	}
 	return okReply()

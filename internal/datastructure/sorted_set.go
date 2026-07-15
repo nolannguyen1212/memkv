@@ -219,6 +219,16 @@ func (sortedSet *SortedSet) Remove(key string, members ...string) int {
 	return removed
 }
 
+func (sortedSet *SortedSet) DeleteKey(key string) bool {
+	sortedSet.mutex.Lock()
+	defer sortedSet.mutex.Unlock()
+	if _, exists := sortedSet.entries[key]; !exists {
+		return false
+	}
+	delete(sortedSet.entries, key)
+	return true
+}
+
 func (sortedSet *SortedSet) Score(key, member string) (float64, bool) {
 	sortedSet.mutex.RLock()
 	defer sortedSet.mutex.RUnlock()

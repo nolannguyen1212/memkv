@@ -70,6 +70,16 @@ func (hash *Hash) Delete(key string, fields ...string) int {
 	return deleted
 }
 
+func (hash *Hash) DeleteKey(key string) bool {
+	hash.mutex.Lock()
+	defer hash.mutex.Unlock()
+	if _, exists := hash.entries[key]; !exists {
+		return false
+	}
+	delete(hash.entries, key)
+	return true
+}
+
 func (hash *Hash) GetAll(key string) (map[string]string, bool) {
 	hash.mutex.RLock()
 	defer hash.mutex.RUnlock()

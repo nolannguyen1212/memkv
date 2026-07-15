@@ -68,6 +68,16 @@ func (set *Set) Remove(key string, members ...string) int {
 	return removed
 }
 
+func (set *Set) DeleteKey(key string) bool {
+	set.mutex.Lock()
+	defer set.mutex.Unlock()
+	if _, exists := set.entries[key]; !exists {
+		return false
+	}
+	delete(set.entries, key)
+	return true
+}
+
 func (set *Set) Members(key string) ([]string, bool) {
 	set.mutex.RLock()
 	entry, exists := set.entries[key]

@@ -3,8 +3,10 @@ package core
 import (
 	"bytes"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/william1nguyen/valkeydb/internal/protocol"
 	"github.com/william1nguyen/valkeydb/internal/replication"
@@ -17,9 +19,10 @@ type AOFAppender interface {
 }
 
 type Context struct {
-	Store       *Store
-	AOF         AOFAppender
-	Replication *replication.Manager
+	Store             *Store
+	AOF               AOFAppender
+	Replication       *replication.Manager
+	persistenceFailed atomic.Bool
 }
 
 func NewContext(store *Store, aof AOFAppender, replicationManager *replication.Manager) *Context {
@@ -27,17 +30,13 @@ func NewContext(store *Store, aof AOFAppender, replicationManager *replication.M
 }
 
 func (ctx *Context) OnKeyMutate(key string) {
+	ctx.Store.Keyspace.BumpVersion(key)
 	globalWatch.Notify(key)
 }
 
 func (ctx *Context) OnKeyWrite(key string) {
 	ctx.OnKeyMutate(key)
 	ctx.Store.Eviction.RecordInsert(key)
-	for ctx.Store.Eviction.ShouldEvict() {
-		if ctx.Store.Eviction.EvictOne() == "" {
-			break
-		}
-	}
 }
 
 func (ctx *Context) OnKeyRead(key string) {
@@ -49,13 +48,35 @@ func (ctx *Context) OnKeyDelete(key string) {
 	ctx.Store.Eviction.RecordDelete(key)
 }
 
-func (ctx *Context) AppendAOF(value protocol.Value) {
+func (ctx *Context) AppendAOF(value protocol.Value) error {
+	if err := ctx.appendAndPropagate(value); err != nil {
+		ctx.persistenceFailed.Store(true)
+		return err
+	}
+	for ctx.Store.Eviction.ShouldEvict() {
+		key := ctx.Store.Eviction.EvictOne()
+		if key == "" {
+			break
+		}
+		globalWatch.Notify(key)
+		if err := ctx.appendAndPropagate(buildBulkArray("DEL", key)); err != nil {
+			ctx.persistenceFailed.Store(true)
+			return err
+		}
+	}
+	return nil
+}
+
+func (ctx *Context) appendAndPropagate(value protocol.Value) error {
 	if ctx.AOF != nil {
-		_ = ctx.AOF.Append(value)
+		if err := ctx.AOF.Append(value); err != nil {
+			return err
+		}
 	}
 	if ctx.Replication != nil {
 		ctx.Replication.Propagate([]byte(protocol.Encode(value)))
 	}
+	return nil
 }
 
 func (ctx *Context) GenerateRDB() []byte {
@@ -116,6 +137,30 @@ func (ctx *Context) GenerateRDB() []byte {
 		buffer.WriteString(protocol.Encode(protocol.Value{Type: protocol.TypeArray, Array: values}))
 	}
 
+	for key, members := range ctx.Store.SortedSet.Snapshot() {
+		if len(members) == 0 {
+			continue
+		}
+		values := []protocol.Value{
+			{Type: protocol.TypeBulkString, String: "ZADD"},
+			{Type: protocol.TypeBulkString, String: key},
+		}
+		for member, score := range members {
+			values = append(values, protocol.Value{Type: protocol.TypeBulkString, String: strconv.FormatFloat(score, 'g', -1, 64)})
+			values = append(values, protocol.Value{Type: protocol.TypeBulkString, String: member})
+		}
+		buffer.WriteString(protocol.Encode(protocol.Value{Type: protocol.TypeArray, Array: values}))
+	}
+
+	for key, metadata := range ctx.Store.Keyspace.Snapshot() {
+		if metadata.ExpiredAt.IsZero() {
+			continue
+		}
+		buffer.WriteString(protocol.Encode(buildBulkArray(
+			"PEXPIREAT", key, strconv.FormatInt(metadata.ExpiredAt.UnixMilli(), 10),
+		)))
+	}
+
 	return buffer.Bytes()
 }
 
@@ -157,9 +202,11 @@ var writeCommands = map[string]bool{
 	"APPEND": true, "SETRANGE": true,
 	"EXPIRE": true, "PEXPIRE": true, "EXPIREAT": true, "PEXPIREAT": true, "PERSIST": true,
 	"SADD": true, "SREM": true, "SMOVE": true, "SPOP": true,
+	"SEXPIRE":    true,
 	"SDIFFSTORE": true, "SINTERSTORE": true, "SUNIONSTORE": true,
 	"LPUSH": true, "RPUSH": true, "LPUSHX": true, "RPUSHX": true,
 	"LPOP": true, "RPOP": true, "LSET": true, "LINSERT": true, "LREM": true, "LTRIM": true,
+	"SORT": true,
 	"HSET": true, "HMSET": true, "HDEL": true, "HSETNX": true,
 	"HINCRBY": true, "HINCRBYFLOAT": true,
 	"ZADD": true, "ZREM": true, "ZINCRBY": true, "ZPOPMIN": true, "ZPOPMAX": true,
@@ -175,11 +222,19 @@ func Execute(connContext *ConnContext, name string, args []protocol.Value) proto
 	if connContext.Connection != nil && connContext.Replication != nil && connContext.Replication.IsReplica() && writeCommands[name] {
 		return protocol.Value{Type: protocol.TypeError, String: "READONLY You can't write against a read only replica."}
 	}
+	if writeCommands[name] && connContext.persistenceFailed.Load() {
+		return persistenceError()
+	}
 
 	// EXEC owns the exclusive lock itself because it must keep that lock while
 	// dispatching every queued command. All other commands share the same
 	// boundary and therefore cannot run in the middle of an EXEC batch.
 	if name == "EXEC" {
+		return executeCommand(connContext, name, args)
+	}
+	if writeCommands[name] {
+		connContext.Store.ExecMu.Lock()
+		defer connContext.Store.ExecMu.Unlock()
 		return executeCommand(connContext, name, args)
 	}
 	connContext.Store.ExecMu.RLock()

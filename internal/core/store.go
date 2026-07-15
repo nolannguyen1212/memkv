@@ -9,6 +9,7 @@ import (
 )
 
 type Store struct {
+	Keyspace   *datastructure.Keyspace
 	Dictionary *datastructure.Dictionary
 	Set        *datastructure.Set
 	List       *datastructure.List
@@ -48,12 +49,27 @@ func NewStore(config StoreConfig) *Store {
 		SortedSet:  datastructure.NewSortedSet(),
 		PubSub:     datastructure.NewPubSub(),
 	}
+	store.Keyspace = datastructure.NewKeyspace(
+		expConfig.CheckInterval,
+		func(key string) {
+			store.deleteValue(key)
+			if store.Eviction != nil {
+				store.Eviction.RecordDelete(key)
+			}
+		},
+		func(expire func()) {
+			store.ExecMu.Lock()
+			defer store.ExecMu.Unlock()
+			expire()
+		},
+	)
 
 	store.Eviction = datastructure.NewEvictionManager(datastructure.EvictionConfig{
 		Strategy: datastructure.EvictStrategy(config.EvictStrategy),
 		KeyLimit: config.KeyLimit,
 		OnEvict: func(key string) {
-			store.deleteKey(key)
+			store.Keyspace.Delete(key)
+			store.deleteValue(key)
 			log.Printf("Evicted key: %s", key)
 		},
 	})
@@ -61,10 +77,52 @@ func NewStore(config StoreConfig) *Store {
 	return store
 }
 
-func (store *Store) deleteKey(key string) {
+func (store *Store) PrepareWrite(key string, keyType datastructure.KeyType, replace bool) bool {
+	oldType, ok := store.Keyspace.Claim(key, keyType, replace)
+	if !ok {
+		return false
+	}
+	if oldType != "" {
+		store.deleteValue(key)
+	}
+	return true
+}
+
+func (store *Store) HasType(key string, expected datastructure.KeyType) (exists bool, valid bool) {
+	actual, exists := store.Keyspace.Type(key)
+	return exists, !exists || actual == expected
+}
+
+func (store *Store) DeleteKey(key string) bool {
+	if !store.Keyspace.Delete(key) {
+		return false
+	}
+	store.deleteValue(key)
+	store.Eviction.RecordDelete(key)
+	return true
+}
+
+func (store *Store) RemoveEmptyKey(key string, keyType datastructure.KeyType) {
+	if store.Keyspace.RemoveIfType(key, keyType) {
+		store.Eviction.RecordDelete(key)
+	}
+}
+
+func (store *Store) Clear() []string {
+	metadata := store.Keyspace.Snapshot()
+	keys := make([]string, 0, len(metadata))
+	for key := range metadata {
+		if store.DeleteKey(key) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func (store *Store) deleteValue(key string) {
 	store.Dictionary.Delete(key)
-	store.Set.Remove(key)
-	store.List.LeftPop(key, store.List.Length(key))
-	store.Hash.Delete(key)
-	store.SortedSet.Remove(key)
+	store.Set.DeleteKey(key)
+	store.List.DeleteKey(key)
+	store.Hash.DeleteKey(key)
+	store.SortedSet.DeleteKey(key)
 }

@@ -35,8 +35,14 @@ func handleZadd(connContext *ConnContext, args []protocol.Value) protocol.Value 
 		})
 	}
 
+	if !connContext.Store.PrepareWrite(key, datastructure.KeyTypeSortedSet, false) {
+		return wrongTypeError()
+	}
 	count := connContext.Store.SortedSet.Add(key, items...)
 	connContext.OnKeyWrite(key)
+	if err := connContext.AppendAOF(buildBulkArray(append([]string{"ZADD"}, extractStrings(args)...)...)); err != nil {
+		return persistenceError()
+	}
 	return intReply(int64(count))
 }
 
@@ -46,10 +52,21 @@ func handleZrem(connContext *ConnContext, args []protocol.Value) protocol.Value 
 	}
 
 	key := args[0].String
+	if _, valid := connContext.Store.HasType(key, datastructure.KeyTypeSortedSet); !valid {
+		return wrongTypeError()
+	}
 	members := extractStrings(args[1:])
 	count := connContext.Store.SortedSet.Remove(key, members...)
 
-	connContext.OnKeyMutate(key)
+	if count > 0 {
+		connContext.OnKeyMutate(key)
+		if connContext.Store.SortedSet.Cardinality(key) == 0 {
+			connContext.Store.RemoveEmptyKey(key, datastructure.KeyTypeSortedSet)
+		}
+		if err := connContext.AppendAOF(buildBulkArray(append([]string{"ZREM"}, extractStrings(args)...)...)); err != nil {
+			return persistenceError()
+		}
+	}
 	return intReply(int64(count))
 }
 
@@ -58,8 +75,12 @@ func handleZscore(connContext *ConnContext, args []protocol.Value) protocol.Valu
 		return wrongArgCountError("zscore")
 	}
 
-	connContext.OnKeyRead(args[0].String)
-	score, exists := connContext.Store.SortedSet.Score(args[0].String, args[1].String)
+	key := args[0].String
+	if _, valid := connContext.Store.HasType(key, datastructure.KeyTypeSortedSet); !valid {
+		return wrongTypeError()
+	}
+	connContext.OnKeyRead(key)
+	score, exists := connContext.Store.SortedSet.Score(key, args[1].String)
 	if !exists {
 		return nullStringReply()
 	}
@@ -71,8 +92,12 @@ func handleZrank(connContext *ConnContext, args []protocol.Value) protocol.Value
 		return wrongArgCountError("zrank")
 	}
 
-	connContext.OnKeyRead(args[0].String)
-	rank, exists := connContext.Store.SortedSet.Rank(args[0].String, args[1].String)
+	key := args[0].String
+	if _, valid := connContext.Store.HasType(key, datastructure.KeyTypeSortedSet); !valid {
+		return wrongTypeError()
+	}
+	connContext.OnKeyRead(key)
+	rank, exists := connContext.Store.SortedSet.Rank(key, args[1].String)
 	if !exists {
 		return nullStringReply()
 	}
@@ -84,8 +109,12 @@ func handleZcard(connContext *ConnContext, args []protocol.Value) protocol.Value
 		return wrongArgCountError("zcard")
 	}
 
-	connContext.OnKeyRead(args[0].String)
-	return intReply(int64(connContext.Store.SortedSet.Cardinality(args[0].String)))
+	key := args[0].String
+	if _, valid := connContext.Store.HasType(key, datastructure.KeyTypeSortedSet); !valid {
+		return wrongTypeError()
+	}
+	connContext.OnKeyRead(key)
+	return intReply(int64(connContext.Store.SortedSet.Cardinality(key)))
 }
 
 func handleZrange(connContext *ConnContext, args []protocol.Value) protocol.Value {
@@ -94,6 +123,9 @@ func handleZrange(connContext *ConnContext, args []protocol.Value) protocol.Valu
 	}
 
 	key := args[0].String
+	if _, valid := connContext.Store.HasType(key, datastructure.KeyTypeSortedSet); !valid {
+		return wrongTypeError()
+	}
 	start, err := strconv.Atoi(args[1].String)
 	if err != nil {
 		return notIntegerError()

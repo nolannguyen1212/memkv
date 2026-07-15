@@ -86,6 +86,16 @@ func (list *List) RightPop(key string, count int) []string {
 	return result
 }
 
+func (list *List) DeleteKey(key string) bool {
+	list.mutex.Lock()
+	defer list.mutex.Unlock()
+	if _, exists := list.entries[key]; !exists {
+		return false
+	}
+	delete(list.entries, key)
+	return true
+}
+
 func (list *List) Length(key string) int {
 	list.mutex.RLock()
 	defer list.mutex.RUnlock()
