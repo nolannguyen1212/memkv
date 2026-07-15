@@ -16,6 +16,10 @@ A high-performance, Redis-compatible in-memory database built from scratch in Go
 - **Dual Persistence**: AOF and RDB support
 - **TTL Support**: Automatic key expiration
 
+## System Architecture
+
+![ValkeyDB system architecture](assets/valkeydb-architecture.png)
+
 ## Getting Started
 
 ```bash
