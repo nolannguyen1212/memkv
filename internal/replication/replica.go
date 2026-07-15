@@ -36,7 +36,7 @@ func (manager *Manager) ConnectToPrimary(primaryAddress, apiKey string, dispatch
 	if err != nil {
 		return err
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 
 	writer := &primaryConnectionWriter{connection: connection}
 	reader := bufio.NewReader(connection)
@@ -176,7 +176,10 @@ func (manager *Manager) streamLoop(writer *primaryConnectionWriter, reader *bufi
 		dispatch(cmd, value.Array[1:])
 
 		offset := manager.replicationOffset.Load()
-		writer.Send("REPLCONF", "ACK", strconv.FormatInt(offset, 10))
+		if err := writer.Send("REPLCONF", "ACK", strconv.FormatInt(offset, 10)); err != nil {
+			log.Printf("replication: failed to acknowledge offset %d: %v", offset, err)
+			return
+		}
 	}
 }
 

@@ -41,7 +41,7 @@ func TestPartialSyncHasNoGapBeforeReplicaRegistration(t *testing.T) {
 	manager.Propagate(initial)
 
 	serverConnection, replicaConnection := net.Pipe()
-	defer replicaConnection.Close()
+	defer func() { _ = replicaConnection.Close() }()
 	done := make(chan struct{})
 	go func() {
 		_ = manager.HandlePSYNC(serverConnection, "replica", manager.primaryStreamID, 0, func() []byte { return nil })

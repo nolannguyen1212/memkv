@@ -102,7 +102,7 @@ func writeAll(connection net.Conn, data []byte) error {
 }
 
 func (manager *Manager) readReplicaCommands(connection net.Conn, replicaConnection *ReplicaConnection) {
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	defer func() {
 		log.Printf("replication: replica %s disconnected", replicaConnection.Address)
 		manager.RemoveReplica(replicaConnection.ID)
