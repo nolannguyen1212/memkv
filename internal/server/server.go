@@ -221,7 +221,7 @@ func (server *Server) handleConnection(conn net.Conn) {
 	connTaken := false
 	defer func() {
 		if !connTaken {
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 
@@ -289,7 +289,7 @@ func (server *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer,
 			*authenticated = true
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.WriteTimeout()))
-		server.writeResponse(writer, conn, response)
+		_ = server.writeResponse(writer, conn, response)
 		return true
 
 	case "PING", "QUIT", "REPLCONF", "PSYNC":
@@ -298,7 +298,7 @@ func (server *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer,
 	default:
 		response := protocol.Value{Type: protocol.TypeError, String: "NOAUTH Authentication required."}
 		_ = conn.SetWriteDeadline(time.Now().Add(config.Global.WriteTimeout()))
-		server.writeResponse(writer, conn, response)
+		_ = server.writeResponse(writer, conn, response)
 		return true
 	}
 }
