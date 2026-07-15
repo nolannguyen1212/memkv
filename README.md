@@ -183,21 +183,6 @@ When `key_limit` is exceeded, keys are evicted based on `evict_strategy`:
 | `lfu`           | Evict key with lowest access frequency |
 | `evict_first`   | Evict earliest inserted key            |
 
-## Architecture
-
-```text
-valkeydb/
-├── cmd/valkeydb/          # Entry point
-├── core/
-│   ├── storage/           # Pure data structures
-│   └── store/             # Store interface
-├── command/               # Self-registering commands
-├── protocol/              # RESP protocol
-├── persistence/           # AOF/RDB
-├── server/                # TCP server
-└── config/                # Configuration
-```
-
 ## Docker
 
 ```bash
