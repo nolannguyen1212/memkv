@@ -63,7 +63,7 @@ func (aof *AOF) Load(path string, dispatch func(cmd string, args []protocol.Valu
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	reader := bufio.NewReader(file)
 	aof.isReplaying.Store(true)

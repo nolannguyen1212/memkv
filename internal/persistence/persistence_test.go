@@ -34,7 +34,7 @@ func TestAOFReplaysListPopsAndSortedSetMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer aof.Close()
+	defer func() { _ = aof.Close() }()
 
 	source := core.NewConnContext(core.NewContext(newStore(), aof, nil), nil)
 	execute(source, "RPUSH", "list", "a", "b", "c")
@@ -93,7 +93,7 @@ func TestAOFRewriteKeepsSortedSetsAndContinuesAppending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer loader.Close()
+	defer func() { _ = loader.Close() }()
 	target := core.NewConnContext(core.NewContext(newStore(), nil, nil), nil)
 	if err := loader.Load(path, func(name string, args []protocol.Value) error {
 		core.Execute(target, name, args)
@@ -115,7 +115,7 @@ func TestRDBRoundTripIncludesTypedSortedSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	snapshot := persistence.Snapshot{
 		KeyspaceData: map[string]datastructure.KeyMetadata{
@@ -147,7 +147,7 @@ func TestAOFLoadRejectsTruncatedCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer aof.Close()
+	defer func() { _ = aof.Close() }()
 	if err := aof.Load(path, func(string, []protocol.Value) error { return nil }); err == nil {
 		t.Fatal("truncated AOF should return a recovery error")
 	}
@@ -162,7 +162,7 @@ func TestRDBLoadRejectsTruncatedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 	if _, err := rdb.Load(path); err == nil {
 		t.Fatal("truncated RDB should return a recovery error")
 	}
