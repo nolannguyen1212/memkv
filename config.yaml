@@ -5,9 +5,11 @@ server:
   auth: secretpassword
 
 replication:
+  role: "primary"
+  primary_addr: ""
+  username: ""
+  password: ""
   backlog_size: 1048576
-  heartbeat_interval: 1
-  heartbeat_timeout: 5
 
 persistence:
   aof:

@@ -1,0 +1,36 @@
+server:
+  addr: ":6380"
+  read_timeout: 300
+  write_timeout: 300
+  auth: secretpassword
+
+replication:
+  role: "replica"
+  primary_addr: "127.0.0.1:6379"
+  username: "default"
+  password: "secretpassword"
+  backlog_size: 1048576
+
+persistence:
+  aof:
+    enabled: true
+    filename: "appendonly-replica.aof"
+    rewrite_interval: 3600
+    max_size_mb: 64
+  rdb:
+    enabled: true
+    filename: "dump-replica.rdb"
+
+datastructure:
+  expiration:
+    max_sample_size: 20
+    max_sample_rounds: 3
+    check_interval: 1
+
+memory:
+  key_limit: 5000000
+  evict_strategy: "lru"
+
+logging:
+  level: "info"
+  verbose_persistence: true

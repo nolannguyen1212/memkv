@@ -10,21 +10,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/protocol"
+	"github.com/william1nguyen/valkeydb/internal/resp"
 )
 
 func TestReceiveRDBFlushesBeforeApplyingSnapshot(t *testing.T) {
 	manager := NewManager(ManagerConfig{BacklogCapacity: 1024})
-	set := protocol.Value{Type: protocol.TypeArray, Array: []protocol.Value{
-		{Type: protocol.TypeBulkString, String: "SET"},
-		{Type: protocol.TypeBulkString, String: "key"},
-		{Type: protocol.TypeBulkString, String: "value"},
+	set := resp.Value{Type: resp.TypeArray, Array: []resp.Value{
+		{Type: resp.TypeBulkString, String: "SET"},
+		{Type: resp.TypeBulkString, String: "key"},
+		{Type: resp.TypeBulkString, String: "value"},
 	}}
-	payload := protocol.Encode(set)
+	payload := resp.Encode(set)
 	stream := fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
 
 	var commands []string
-	err := manager.receiveRDB(bufio.NewReader(bytes.NewBufferString(stream)), func(name string, _ []protocol.Value) {
+	err := manager.receiveRDB(bufio.NewReader(bytes.NewBufferString(stream)), func(name string, _ []resp.Value) {
 		commands = append(commands, name)
 	})
 	if err != nil {
