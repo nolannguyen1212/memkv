@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/protocol"
+	"github.com/william1nguyen/valkeydb/internal/resp"
 )
 
 type primaryConnectionWriter struct {
@@ -23,47 +23,73 @@ type primaryConnectionWriter struct {
 func (writer *primaryConnectionWriter) Send(args ...string) error {
 	writer.mutex.Lock()
 	defer writer.mutex.Unlock()
-	values := make([]protocol.Value, len(args))
+	values := make([]resp.Value, len(args))
 	for i, arg := range args {
-		values[i] = protocol.Value{Type: protocol.TypeBulkString, String: arg}
+		values[i] = resp.Value{Type: resp.TypeBulkString, String: arg}
 	}
-	_, err := fmt.Fprint(writer.connection, protocol.Encode(protocol.Value{Type: protocol.TypeArray, Array: values}))
+	_, err := fmt.Fprint(writer.connection, resp.Encode(resp.Value{Type: resp.TypeArray, Array: values}))
 	return err
 }
 
-func (manager *Manager) ConnectToPrimary(primaryAddress, apiKey string, dispatch func(string, []protocol.Value)) error {
+func (manager *Manager) ConnectToPrimary(primaryAddress, username, password string, dispatch func(string, []resp.Value)) error {
 	connection, err := net.Dial("tcp", primaryAddress)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = connection.Close() }()
+	manager.mutex.Lock()
+	manager.primaryConnection = connection
+	manager.mutex.Unlock()
+	defer func() {
+		manager.mutex.Lock()
+		if manager.primaryConnection == connection {
+			manager.primaryConnection = nil
+		}
+		manager.mutex.Unlock()
+	}()
 
 	writer := &primaryConnectionWriter{connection: connection}
 	reader := bufio.NewReader(connection)
 
+	if password != "" {
+		var err error
+		if username == "" {
+			err = writer.Send("AUTH", password)
+		} else {
+			err = writer.Send("AUTH", username, password)
+		}
+		if err != nil {
+			return err
+		}
+		response, err := readLine(reader)
+		if err != nil {
+			return err
+		}
+		if response != "+OK" {
+			return fmt.Errorf("authenticate to primary: %s", response)
+		}
+	}
+
 	if err := writer.Send("PING"); err != nil {
 		return err
 	}
-	if _, err := readLine(reader); err != nil {
-		return err
-	}
-
-	if err := writer.Send("REPLCONF", "join-apikey", apiKey); err != nil {
-		return err
-	}
-	response, err := readLine(reader)
+	pingResponse, err := readLine(reader)
 	if err != nil {
 		return err
 	}
-	if response != "+OK" {
-		return fmt.Errorf("join rejected by primary: %s", response)
+	if pingResponse != "+PONG" {
+		return fmt.Errorf("ping primary: %s", pingResponse)
 	}
 
 	if err := writer.Send("REPLCONF", "listening-addr", manager.config.ListeningAddress); err != nil {
 		return err
 	}
-	if _, err := readLine(reader); err != nil {
+	replconfResponse, err := readLine(reader)
+	if err != nil {
 		return err
+	}
+	if replconfResponse != "+OK" {
+		return fmt.Errorf("configure replication: %s", replconfResponse)
 	}
 
 	manager.mutex.RLock()
@@ -108,15 +134,11 @@ func (manager *Manager) ConnectToPrimary(primaryAddress, apiKey string, dispatch
 		return fmt.Errorf("unexpected PSYNC response: %s", syncResponse)
 	}
 
-	stopHeartbeat := make(chan struct{})
-	defer close(stopHeartbeat)
-	go manager.heartbeatLoop(writer, stopHeartbeat)
-
 	manager.streamLoop(writer, reader, dispatch)
 	return nil
 }
 
-func (manager *Manager) receiveRDB(reader *bufio.Reader, dispatch func(string, []protocol.Value)) error {
+func (manager *Manager) receiveRDB(reader *bufio.Reader, dispatch func(string, []resp.Value)) error {
 	line, err := readLine(reader)
 	if err != nil {
 		return err
@@ -143,36 +165,36 @@ func (manager *Manager) receiveRDB(reader *bufio.Reader, dispatch func(string, [
 
 	dataReader := bufio.NewReader(bytes.NewReader(data))
 	for {
-		value, err := protocol.Decode(dataReader)
+		value, err := resp.Decode(dataReader)
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
 			return err
 		}
-		if value.Type == protocol.TypeArray && len(value.Array) > 0 {
+		if value.Type == resp.TypeArray && len(value.Array) > 0 {
 			dispatch(strings.ToUpper(value.Array[0].String), value.Array[1:])
 		}
 	}
 	return nil
 }
 
-func (manager *Manager) streamLoop(writer *primaryConnectionWriter, reader *bufio.Reader, dispatch func(string, []protocol.Value)) {
+func (manager *Manager) streamLoop(writer *primaryConnectionWriter, reader *bufio.Reader, dispatch func(string, []resp.Value)) {
 	for {
-		value, err := protocol.Decode(reader)
+		value, err := resp.Decode(reader)
 		if err != nil {
 			return
 		}
-		if value.Type != protocol.TypeArray || len(value.Array) == 0 {
+		if value.Type != resp.TypeArray || len(value.Array) == 0 {
 			continue
 		}
 
-		encoded := []byte(protocol.Encode(value))
+		encoded := []byte(resp.Encode(value))
 		manager.backlog.Write(encoded)
 		manager.replicationOffset.Add(int64(len(encoded)))
 
 		cmd := strings.ToUpper(value.Array[0].String)
-		log.Printf("[REPLICA] Received from primary: %s", protocol.Encode(value))
+		log.Printf("[REPLICA] Received from primary: %s", resp.Encode(value))
 		dispatch(cmd, value.Array[1:])
 
 		offset := manager.replicationOffset.Load()
@@ -183,23 +205,7 @@ func (manager *Manager) streamLoop(writer *primaryConnectionWriter, reader *bufi
 	}
 }
 
-func (manager *Manager) heartbeatLoop(writer *primaryConnectionWriter, stopChan <-chan struct{}) {
-	ticker := time.NewTicker(manager.config.HeartbeatInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-stopChan:
-			return
-		case <-ticker.C:
-			if err := writer.Send("REPLCONF", "HEARTBEAT"); err != nil {
-				return
-			}
-		}
-	}
-}
-
-func (manager *Manager) reconnectLoop(stopChan <-chan struct{}, primaryAddress, apiKey string, dispatch func(string, []protocol.Value)) {
+func (manager *Manager) reconnectLoop(stopChan <-chan struct{}, primaryAddress, username, password string, dispatch func(string, []resp.Value)) {
 	const maxDelay = 30 * time.Second
 	delay := time.Second
 
@@ -210,7 +216,7 @@ func (manager *Manager) reconnectLoop(stopChan <-chan struct{}, primaryAddress, 
 		default:
 		}
 
-		if err := manager.ConnectToPrimary(primaryAddress, apiKey, dispatch); err != nil {
+		if err := manager.ConnectToPrimary(primaryAddress, username, password, dispatch); err != nil {
 			log.Printf("replication: %s: %v; retry in %v", primaryAddress, err, delay)
 		}
 

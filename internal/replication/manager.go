@@ -9,9 +9,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/protocol"
+	"github.com/william1nguyen/valkeydb/internal/resp"
 )
 
 type Role int32
@@ -36,51 +35,69 @@ func (replicaConnection *ReplicaConnection) Send(data []byte) error {
 }
 
 type ManagerConfig struct {
-	BacklogCapacity   int
-	HeartbeatInterval time.Duration
-	HeartbeatTimeout  time.Duration
-	ListeningAddress  string
+	BacklogCapacity  int
+	ListeningAddress string
 }
 
 type Manager struct {
-	serverAPIKey         string
-	role                 Role
-	primaryStreamID      string
-	primaryAddress       string
-	backlog              *Backlog
-	replicas             []*ReplicaConnection
-	replicaLastHeartbeat map[string]time.Time
-	replaying            atomic.Bool
-	replicationOffset    atomic.Int64
-	stopReplication      chan struct{}
-	config               ManagerConfig
-	mutex                sync.RWMutex
-	propagateMutex       sync.Mutex
+	role              Role
+	primaryStreamID   string
+	primaryAddress    string
+	primaryConnection net.Conn
+	backlog           *Backlog
+	replicas          []*ReplicaConnection
+	replaying         atomic.Bool
+	replicationOffset atomic.Int64
+	stopReplication   chan struct{}
+	config            ManagerConfig
+	mutex             sync.RWMutex
+	propagateMutex    sync.Mutex
+	waitGroup         sync.WaitGroup
+}
+
+func (manager *Manager) Close() error {
+	manager.mutex.Lock()
+	if manager.stopReplication != nil {
+		close(manager.stopReplication)
+		manager.stopReplication = nil
+	}
+	primaryConnection := manager.primaryConnection
+	manager.primaryConnection = nil
+	replicas := append([]*ReplicaConnection(nil), manager.replicas...)
+	manager.replicas = nil
+	manager.mutex.Unlock()
+
+	var firstErr error
+	if primaryConnection != nil {
+		firstErr = primaryConnection.Close()
+	}
+	for _, replica := range replicas {
+		if err := replica.Connection.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	manager.waitGroup.Wait()
+	return firstErr
 }
 
 func NewManager(config ManagerConfig) *Manager {
 	return &Manager{
-		serverAPIKey:         generateHex(20),
-		role:                 RolePrimary,
-		primaryStreamID:      generateHex(20),
-		backlog:              NewBacklog(config.BacklogCapacity),
-		replicaLastHeartbeat: make(map[string]time.Time),
-		config:               config,
+		role:            RolePrimary,
+		primaryStreamID: mustGenerateID(20),
+		backlog:         NewBacklog(config.BacklogCapacity),
+		config:          config,
 	}
 }
 
-func generateHex(length int) string {
+// mustGenerateID creates protocol identifiers, not credentials. Failure means
+// the operating system's secure random source is unavailable, so startup
+// cannot safely continue.
+func mustGenerateID(length int) string {
 	bytes := make([]byte, length)
-	rand.Read(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		panic(fmt.Sprintf("generate replication ID: %v", err))
+	}
 	return hex.EncodeToString(bytes)
-}
-
-func (manager *Manager) ServerAPIKey() string {
-	return manager.serverAPIKey
-}
-
-func (manager *Manager) ValidateAPIKey(key string) bool {
-	return key == manager.serverAPIKey
 }
 
 func (manager *Manager) SetReplaying(v bool) {
@@ -114,7 +131,6 @@ func (manager *Manager) AddReplica(replica *ReplicaConnection) {
 	manager.mutex.Lock()
 	defer manager.mutex.Unlock()
 	manager.replicas = append(manager.replicas, replica)
-	manager.replicaLastHeartbeat[replica.ID] = time.Now()
 }
 
 func (manager *Manager) RemoveReplica(id string) {
@@ -123,27 +139,9 @@ func (manager *Manager) RemoveReplica(id string) {
 	for i, replica := range manager.replicas {
 		if replica.ID == id {
 			manager.replicas = append(manager.replicas[:i], manager.replicas[i+1:]...)
-			delete(manager.replicaLastHeartbeat, id)
 			return
 		}
 	}
-}
-
-func (manager *Manager) UpdateAcknowledgedOffset(connection net.Conn, offset int64) {
-	manager.mutex.RLock()
-	defer manager.mutex.RUnlock()
-	for _, replica := range manager.replicas {
-		if replica.Connection == connection {
-			replica.AcknowledgedOffset.Store(offset)
-			return
-		}
-	}
-}
-
-func (manager *Manager) UpdateReplicaHeartbeat(id string) {
-	manager.mutex.Lock()
-	defer manager.mutex.Unlock()
-	manager.replicaLastHeartbeat[id] = time.Now()
 }
 
 func (manager *Manager) ActiveReplicas() []string {
@@ -162,19 +160,27 @@ func (manager *Manager) activeReplicasLocked() []string {
 	return addresses
 }
 
-func (manager *Manager) SetReplica(address, apiKey string, dispatch func(string, []protocol.Value)) {
+func (manager *Manager) SetReplica(address, username, password string, dispatch func(string, []resp.Value)) {
 	manager.mutex.Lock()
 	if manager.stopReplication != nil {
 		close(manager.stopReplication)
 	}
 	manager.stopReplication = make(chan struct{})
+	if manager.primaryConnection != nil {
+		_ = manager.primaryConnection.Close()
+		manager.primaryConnection = nil
+	}
 	stopChan := manager.stopReplication
 	manager.role = RoleReplica
 	manager.primaryStreamID = ""
 	manager.primaryAddress = address
 	manager.mutex.Unlock()
 
-	go manager.reconnectLoop(stopChan, address, apiKey, dispatch)
+	manager.waitGroup.Add(1)
+	go func() {
+		defer manager.waitGroup.Done()
+		manager.reconnectLoop(stopChan, address, username, password, dispatch)
+	}()
 }
 
 func (manager *Manager) Promote() {
@@ -184,9 +190,13 @@ func (manager *Manager) Promote() {
 		close(manager.stopReplication)
 		manager.stopReplication = nil
 	}
+	if manager.primaryConnection != nil {
+		_ = manager.primaryConnection.Close()
+		manager.primaryConnection = nil
+	}
 	manager.role = RolePrimary
 	manager.primaryAddress = ""
-	manager.primaryStreamID = generateHex(20)
+	manager.primaryStreamID = mustGenerateID(20)
 }
 
 func (manager *Manager) IsPrimary() bool {
@@ -223,9 +233,8 @@ func (manager *Manager) Info() string {
 	}
 
 	return fmt.Sprintf(
-		"role:%s\nserver_api_key:%s\nreplication_id:%s\nreplication_offset:%d\nconnected_replicas:%d\nactive_replicas:%s",
+		"role:%s\nreplication_id:%s\nreplication_offset:%d\nconnected_replicas:%d\nactive_replicas:%s",
 		role,
-		manager.serverAPIKey,
 		manager.primaryStreamID,
 		manager.backlog.CurrentOffset(),
 		len(manager.replicas),

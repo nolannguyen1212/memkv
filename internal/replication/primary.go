@@ -8,9 +8,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/protocol"
+	"github.com/william1nguyen/valkeydb/internal/resp"
 )
 
 func (manager *Manager) HandlePSYNC(connection net.Conn, replicaAddress, replicaID string, offset int64, getRDB func() []byte) error {
@@ -22,7 +21,7 @@ func (manager *Manager) HandlePSYNC(connection net.Conn, replicaAddress, replica
 	defer manager.propagateMutex.Unlock()
 
 	replicaConnection := &ReplicaConnection{
-		ID:         generateHex(8),
+		ID:         mustGenerateID(8),
 		Address:    replicaAddress,
 		Connection: connection,
 	}
@@ -61,7 +60,11 @@ func (manager *Manager) fullSync(connection net.Conn, replicaConnection *Replica
 	}
 
 	manager.AddReplica(replicaConnection)
-	go manager.readReplicaCommands(connection, replicaConnection)
+	manager.waitGroup.Add(1)
+	go func() {
+		defer manager.waitGroup.Done()
+		manager.readReplicaCommands(connection, replicaConnection)
+	}()
 	return nil
 }
 
@@ -83,7 +86,11 @@ func (manager *Manager) partialSync(connection net.Conn, replicaConnection *Repl
 	}
 
 	manager.AddReplica(replicaConnection)
-	go manager.readReplicaCommands(connection, replicaConnection)
+	manager.waitGroup.Add(1)
+	go func() {
+		defer manager.waitGroup.Done()
+		manager.readReplicaCommands(connection, replicaConnection)
+	}()
 	return nil
 }
 
@@ -110,60 +117,25 @@ func (manager *Manager) readReplicaCommands(connection net.Conn, replicaConnecti
 
 	reader := bufio.NewReader(connection)
 	for {
-		value, err := protocol.Decode(reader)
+		value, err := resp.Decode(reader)
 		if err != nil {
 			log.Printf("replication: read error from replica %s: %v", replicaConnection.Address, err)
 			return
 		}
-		if value.Type != protocol.TypeArray || len(value.Array) < 2 {
+		if value.Type != resp.TypeArray || len(value.Array) < 2 {
 			continue
 		}
 		if strings.ToUpper(value.Array[0].String) != "REPLCONF" {
 			continue
 		}
 
-		switch strings.ToUpper(value.Array[1].String) {
-		case "HEARTBEAT":
-			manager.UpdateReplicaHeartbeat(replicaConnection.ID)
-		case "ACK":
+		if strings.EqualFold(value.Array[1].String, "ACK") {
 			if len(value.Array) >= 3 {
 				offset, err := strconv.ParseInt(value.Array[2].String, 10, 64)
 				if err == nil {
 					replicaConnection.AcknowledgedOffset.Store(offset)
 				}
 			}
-		}
-	}
-}
-
-func (manager *Manager) StartLivenessMonitor(stopChan <-chan struct{}) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-stopChan:
-			return
-		case <-ticker.C:
-			manager.evictDeadReplicas()
-		}
-	}
-}
-
-func (manager *Manager) evictDeadReplicas() {
-	manager.mutex.Lock()
-	defer manager.mutex.Unlock()
-
-	deadline := time.Now().Add(-manager.config.HeartbeatTimeout)
-	for replicaID, lastHeartbeat := range manager.replicaLastHeartbeat {
-		if lastHeartbeat.Before(deadline) {
-			for i, replica := range manager.replicas {
-				if replica.ID == replicaID {
-					manager.replicas = append(manager.replicas[:i], manager.replicas[i+1:]...)
-					break
-				}
-			}
-			delete(manager.replicaLastHeartbeat, replicaID)
 		}
 	}
 }
