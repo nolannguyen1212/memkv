@@ -95,21 +95,22 @@ QUEUED
 
 ## Replication
 
-ValkeyDB supports primary-replica replication. Start a primary normally, then connect replicas using the API key printed at startup.
+ValkeyDB follows the Redis OSS model: every primary and replica is an independent process. A replica declares its primary in its own configuration and connects automatically at startup.
 
 **Start primary:**
 
 ```bash
 make run
-# Server API key: <api-key>
 ```
 
 **Start replica:**
 
 ```bash
-make replica ADDRESS=<primary-addr> APIKEY=<api-key>
-# e.g. make replica ADDRESS=localhost:6379 APIKEY=abc123
+make replica
+# Uses config.replica.yaml by default.
 ```
+
+To run more replicas, copy `config.replica.yaml` and give every process a unique `server.addr`, AOF filename, and RDB filename. The primary neither creates replica processes nor owns a replica-count setting.
 
 ```mermaid
 sequenceDiagram
@@ -119,7 +120,8 @@ sequenceDiagram
     participant B as Backlog
     participant R as Replica
 
-    R->>P: Connect with API key
+    R->>P: AUTH (when configured)
+    R->>P: REPLCONF / PSYNC
     alt Full sync
         P->>R: Send RDB snapshot
     else Partial sync
@@ -130,11 +132,11 @@ sequenceDiagram
         C->>P: Write command
         P->>B: Append command
         P->>R: Stream command
-        R-->>P: ACK / heartbeat
+        R-->>P: ACK replication offset
     end
 ```
 
-On connect, the replica performs a **full sync** (RDB snapshot) or **partial sync** (backlog delta on reconnect). Write commands are then streamed in real-time with heartbeat/ACK for liveness tracking.
+On connect, the replica performs a **full sync** (RDB snapshot) or **partial sync** (backlog delta on reconnect). Write commands are then streamed in real time; TCP errors remove disconnected replicas and trigger reconnects.
 
 ## Configuration
 
@@ -148,9 +150,11 @@ server:
   auth: secretpassword
 
 replication:
+  role: "primary"       # primary or replica
+  primary_addr: ""      # required on a replica
+  username: ""          # optional; only the default user is currently supported
+  password: ""          # primary server auth password, when required
   backlog_size: 1048576
-  heartbeat_interval: 1
-  heartbeat_timeout: 5
 
 persistence:
   aof:
@@ -176,6 +180,8 @@ logging:
   level: "info"
   verbose_persistence: true
 ```
+
+For an authenticated primary, the replica's `replication.password` must match the primary's `server.auth`. `replication.username` may be empty or `default`; custom ACL users are not implemented yet.
 
 ### Memory Eviction
 

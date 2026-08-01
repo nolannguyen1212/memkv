@@ -1,18 +1,16 @@
 .PHONY: build run replica test clean
 
-ADDRESS ?=
-APIKEY  ?=
+CONFIG ?= config.yaml
+REPLICA_CONFIG ?= config.replica.yaml
 
 build:
 	@go build -o bin/valkeydb ./cmd/valkeydb
 
 run:
-	@go run ./cmd/valkeydb
+	@go run ./cmd/valkeydb --config=$(CONFIG)
 
 replica:
-	@if [ -z "$(ADDRESS)" ]; then echo "Usage: make replica ADDRESS=<primary-addr> APIKEY=<primary-apikey>"; exit 1; fi
-	@if [ -z "$(APIKEY)" ]; then echo "Usage: make replica ADDRESS=<primary-addr> APIKEY=<primary-apikey>"; exit 1; fi
-	@go run ./cmd/valkeydb --join-addr=$(ADDRESS) --join-apikey=$(APIKEY)
+	@go run ./cmd/valkeydb --config=$(REPLICA_CONFIG)
 
 test:
 	@go test ./...
