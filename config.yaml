@@ -31,5 +31,4 @@ datastructure:
     check_interval: 1
 
 memory:
-  key_limit: 5000000
-  evict_strategy: "lru"
+  max_keys: 5000000
