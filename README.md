@@ -49,7 +49,7 @@ Optional `memory.max_keys` uses deterministic FIFO eviction. Creating a key beyo
 
 When enabled, WAL records are versioned, length-bounded, checksummed, and synchronized before memory is changed. If WAL append or sync fails, the mutation is not applied and later writes are rejected. On startup, an incomplete final record is truncated; corruption in the middle of the log fails recovery instead of being skipped.
 
-Disk snapshots use a versioned and checksummed `.vksp` format. A checkpoint stores the corresponding WAL byte offset, so recovery restores the snapshot and replays only the committed WAL suffix. Disk snapshots are currently written during graceful shutdown, not periodically.
+Disk snapshots use a versioned and checksummed `.mksp` format. A checkpoint stores the corresponding WAL byte offset, so recovery restores the snapshot and replays only the committed WAL suffix. Disk snapshots are currently written during graceful shutdown, not periodically.
 
 Replication is asynchronous. A primary write is acknowledged without waiting for a replica. The primary captures a logical snapshot and its replication offset for full synchronization; writes committed during transfer are handed off through the backlog without a snapshot-to-live gap. A reconnect within the backlog window uses partial synchronization. Slow replicas never block the engine: overflowing their bounded queue disconnects them.
 
@@ -187,7 +187,7 @@ persistence:
     max_size_mb: 64
   snapshot:
     enabled: false
-    filename: dump.vksp
+    filename: dump.mksp
 
 datastructure:
   expiration:

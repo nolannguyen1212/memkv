@@ -145,7 +145,7 @@ func TestValidateAcceptsSnapshotWithWALSuffixRecovery(t *testing.T) {
 	cfg.Persistence.WAL.Enabled = true
 	cfg.Persistence.WAL.Filename = "memkv.wal"
 	cfg.Persistence.Snapshot.Enabled = true
-	cfg.Persistence.Snapshot.Filename = "dump.vksp"
+	cfg.Persistence.Snapshot.Filename = "dump.mksp"
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() rejected WAL and snapshot together: %v", err)

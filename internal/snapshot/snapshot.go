@@ -25,7 +25,7 @@ const (
 )
 
 var (
-	magic         = [4]byte{'V', 'K', 'S', 'P'}
+	magic         = [4]byte{'M', 'K', 'S', 'P'}
 	checksumTable = crc32.MakeTable(crc32.Castagnoli)
 )
 

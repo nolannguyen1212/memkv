@@ -154,7 +154,7 @@ func TestDecodeRejectsTrailingData(t *testing.T) {
 
 func TestSaveFailurePreservesExistingSnapshot(t *testing.T) {
 	directory := t.TempDir()
-	path := filepath.Join(directory, "dump.vksp")
+	path := filepath.Join(directory, "dump.mksp")
 	file := New(true)
 	initial := Data{State: store.LogicalSnapshot{Strings: map[string]store.StringEntry{
 		"key": {Value: "value"},
@@ -199,7 +199,7 @@ func TestSaveReportsEveryReplacementStageFailure(t *testing.T) {
 	for _, stage := range stages {
 		t.Run(stage.name, func(t *testing.T) {
 			file := &File{enabled: true, files: stage.files}
-			err := file.Save(Data{State: store.LogicalSnapshot{}}, "dump.vksp")
+			err := file.Save(Data{State: store.LogicalSnapshot{}}, "dump.mksp")
 
 			if err == nil || err.Error() != stage.name {
 				t.Fatalf("Save() error = %v, want %q", err, stage.name)
@@ -218,7 +218,7 @@ func FuzzDecode(f *testing.F) {
 	}
 
 	f.Add(encoded)
-	f.Add([]byte("VKSP"))
+	f.Add([]byte("MKSP"))
 	f.Fuzz(func(t *testing.T, input []byte) {
 		_, _ = Decode(bytes.NewReader(input))
 	})

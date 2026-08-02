@@ -27,4 +27,4 @@ bench:
 	@./scripts/benchmark.sh
 
 clean:
-	@rm -rf bin/ coverage.out *.wal *.vksp test_*
+	@rm -rf bin/ coverage.out *.wal *.mksp test_*
