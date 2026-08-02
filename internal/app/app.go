@@ -95,7 +95,7 @@ func (a *Application) Run(ctx context.Context) error {
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	a.configureReplica()
+	a.startReplica(runContext)
 
 	serverErrors := make(chan error, 1)
 	go func() {
@@ -155,19 +155,24 @@ func (a *Application) recover() error {
 	return nil
 }
 
-func (a *Application) configureReplica() {
+func (a *Application) startReplica(ctx context.Context) {
 	if a.config.Replication.Role != "replica" {
 		return
 	}
 	dispatchContext := engine.NewConnContext(a.engine, nil)
-	dispatch := func(command string, args []resp.Value) {
-		engine.Execute(dispatchContext, command, args)
+	apply := func(command string, args []resp.Value) error {
+		result := engine.Execute(dispatchContext, command, args)
+		if result.Type == resp.TypeError {
+			return errors.New(result.String)
+		}
+		return nil
 	}
-	a.replication.SetReplica(
+	a.replication.StartReplica(
+		ctx,
 		a.config.Replication.PrimaryAddress,
 		a.config.Replication.Username,
 		a.config.Replication.Password,
-		dispatch,
+		apply,
 	)
 }
 

@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -20,18 +21,18 @@ const (
 	RoleReplica
 )
 
-type ReplicaConnection struct {
-	ID                 string
-	Address            string
-	Connection         net.Conn
-	AcknowledgedOffset atomic.Int64
-	mutex              sync.Mutex
+type ApplyCommand func(string, []resp.Value) error
+
+type replicaConnection struct {
+	Address    string
+	Connection net.Conn
+	mutex      sync.Mutex
 }
 
-func (replicaConnection *ReplicaConnection) Send(data []byte) error {
-	replicaConnection.mutex.Lock()
-	defer replicaConnection.mutex.Unlock()
-	return writeAll(replicaConnection.Connection, data)
+func (replica *replicaConnection) send(data []byte) error {
+	replica.mutex.Lock()
+	defer replica.mutex.Unlock()
+	return writeAll(replica.Connection, data)
 }
 
 type ManagerConfig struct {
@@ -42,28 +43,44 @@ type ManagerConfig struct {
 type Manager struct {
 	role              Role
 	primaryStreamID   string
-	primaryAddress    string
 	primaryConnection net.Conn
+	listeningAddress  string
 	backlog           *Backlog
-	replicas          []*ReplicaConnection
+	replicas          []*replicaConnection
 	replaying         atomic.Bool
 	replicationOffset atomic.Int64
-	stopReplication   chan struct{}
-	config            ManagerConfig
+	replicaCancel     context.CancelFunc
 	mutex             sync.RWMutex
 	propagateMutex    sync.Mutex
 	waitGroup         sync.WaitGroup
 }
 
+func NewManager(config ManagerConfig) *Manager {
+	return &Manager{
+		role:             RolePrimary,
+		primaryStreamID:  mustGenerateReplicationID(),
+		listeningAddress: config.ListeningAddress,
+		backlog:          NewBacklog(config.BacklogCapacity),
+	}
+}
+
+func mustGenerateReplicationID() string {
+	bytes := make([]byte, 20)
+	if _, err := rand.Read(bytes); err != nil {
+		panic(fmt.Sprintf("generate replication ID: %v", err))
+	}
+	return hex.EncodeToString(bytes)
+}
+
 func (manager *Manager) Close() error {
 	manager.mutex.Lock()
-	if manager.stopReplication != nil {
-		close(manager.stopReplication)
-		manager.stopReplication = nil
+	if manager.replicaCancel != nil {
+		manager.replicaCancel()
+		manager.replicaCancel = nil
 	}
 	primaryConnection := manager.primaryConnection
 	manager.primaryConnection = nil
-	replicas := append([]*ReplicaConnection(nil), manager.replicas...)
+	replicas := append([]*replicaConnection(nil), manager.replicas...)
 	manager.replicas = nil
 	manager.mutex.Unlock()
 
@@ -80,65 +97,47 @@ func (manager *Manager) Close() error {
 	return firstErr
 }
 
-func NewManager(config ManagerConfig) *Manager {
-	return &Manager{
-		role:            RolePrimary,
-		primaryStreamID: mustGenerateID(20),
-		backlog:         NewBacklog(config.BacklogCapacity),
-		config:          config,
-	}
-}
-
-// mustGenerateID creates protocol identifiers, not credentials. Failure means
-// the operating system's secure random source is unavailable, so startup
-// cannot safely continue.
-func mustGenerateID(length int) string {
-	bytes := make([]byte, length)
-	if _, err := rand.Read(bytes); err != nil {
-		panic(fmt.Sprintf("generate replication ID: %v", err))
-	}
-	return hex.EncodeToString(bytes)
-}
-
-func (manager *Manager) SetReplaying(v bool) {
-	manager.replaying.Store(v)
+func (manager *Manager) SetReplaying(replaying bool) {
+	manager.replaying.Store(replaying)
 }
 
 func (manager *Manager) Propagate(data []byte) {
 	if !manager.IsPrimary() || manager.replaying.Load() {
 		return
 	}
+
 	manager.propagateMutex.Lock()
 	defer manager.propagateMutex.Unlock()
 
 	manager.backlog.Write(data)
+	replicas := manager.replicaSnapshot()
 
-	manager.mutex.RLock()
-	snapshot := make([]*ReplicaConnection, len(manager.replicas))
-	copy(snapshot, manager.replicas)
-	manager.mutex.RUnlock()
-
-	log.Printf("[PRIMARY] Propagate to %d replica(s): %s", len(snapshot), strings.TrimRight(string(data), "\r\n"))
-
-	for _, replica := range snapshot {
-		if err := replica.Send(data); err != nil {
-			manager.RemoveReplica(replica.ID)
+	log.Printf("replication: propagate to %d replica(s): %s", len(replicas), strings.TrimRight(string(data), "\r\n"))
+	for _, replica := range replicas {
+		if err := replica.send(data); err != nil {
+			manager.removeReplica(replica)
 		}
 	}
 }
 
-func (manager *Manager) AddReplica(replica *ReplicaConnection) {
+func (manager *Manager) replicaSnapshot() []*replicaConnection {
+	manager.mutex.RLock()
+	defer manager.mutex.RUnlock()
+	return append([]*replicaConnection(nil), manager.replicas...)
+}
+
+func (manager *Manager) addReplica(replica *replicaConnection) {
 	manager.mutex.Lock()
 	defer manager.mutex.Unlock()
 	manager.replicas = append(manager.replicas, replica)
 }
 
-func (manager *Manager) RemoveReplica(id string) {
+func (manager *Manager) removeReplica(target *replicaConnection) {
 	manager.mutex.Lock()
 	defer manager.mutex.Unlock()
-	for i, replica := range manager.replicas {
-		if replica.ID == id {
-			manager.replicas = append(manager.replicas[:i], manager.replicas[i+1:]...)
+	for index, replica := range manager.replicas {
+		if replica == target {
+			manager.replicas = append(manager.replicas[:index], manager.replicas[index+1:]...)
 			return
 		}
 	}
@@ -160,43 +159,18 @@ func (manager *Manager) activeReplicasLocked() []string {
 	return addresses
 }
 
-func (manager *Manager) SetReplica(address, username, password string, dispatch func(string, []resp.Value)) {
+func (manager *Manager) StartReplica(parent context.Context, address, username, password string, apply ApplyCommand) {
+	ctx, cancel := context.WithCancel(parent)
+
 	manager.mutex.Lock()
-	if manager.stopReplication != nil {
-		close(manager.stopReplication)
-	}
-	manager.stopReplication = make(chan struct{})
-	if manager.primaryConnection != nil {
-		_ = manager.primaryConnection.Close()
-		manager.primaryConnection = nil
-	}
-	stopChan := manager.stopReplication
 	manager.role = RoleReplica
 	manager.primaryStreamID = ""
-	manager.primaryAddress = address
+	manager.replicaCancel = cancel
 	manager.mutex.Unlock()
 
-	manager.waitGroup.Add(1)
-	go func() {
-		defer manager.waitGroup.Done()
-		manager.reconnectLoop(stopChan, address, username, password, dispatch)
-	}()
-}
-
-func (manager *Manager) Promote() {
-	manager.mutex.Lock()
-	defer manager.mutex.Unlock()
-	if manager.stopReplication != nil {
-		close(manager.stopReplication)
-		manager.stopReplication = nil
-	}
-	if manager.primaryConnection != nil {
-		_ = manager.primaryConnection.Close()
-		manager.primaryConnection = nil
-	}
-	manager.role = RolePrimary
-	manager.primaryAddress = ""
-	manager.primaryStreamID = mustGenerateID(20)
+	manager.waitGroup.Go(func() {
+		manager.reconnectLoop(ctx, address, username, password, apply)
+	})
 }
 
 func (manager *Manager) IsPrimary() bool {
@@ -209,18 +183,6 @@ func (manager *Manager) IsReplica() bool {
 	manager.mutex.RLock()
 	defer manager.mutex.RUnlock()
 	return manager.role == RoleReplica
-}
-
-func (manager *Manager) PrimaryAddress() string {
-	manager.mutex.RLock()
-	defer manager.mutex.RUnlock()
-	return manager.primaryAddress
-}
-
-func (manager *Manager) PrimaryStreamID() string {
-	manager.mutex.RLock()
-	defer manager.mutex.RUnlock()
-	return manager.primaryStreamID
 }
 
 func (manager *Manager) Info() string {
@@ -236,8 +198,15 @@ func (manager *Manager) Info() string {
 		"role:%s\nreplication_id:%s\nreplication_offset:%d\nconnected_replicas:%d\nactive_replicas:%s",
 		role,
 		manager.primaryStreamID,
-		manager.backlog.CurrentOffset(),
+		manager.currentOffsetLocked(),
 		len(manager.replicas),
 		strings.Join(manager.activeReplicasLocked(), ","),
 	)
+}
+
+func (manager *Manager) currentOffsetLocked() int64 {
+	if manager.role == RoleReplica {
+		return manager.replicationOffset.Load()
+	}
+	return manager.backlog.CurrentOffset()
 }

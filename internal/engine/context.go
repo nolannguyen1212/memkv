@@ -23,9 +23,7 @@ type Replicator interface {
 	HandlePSYNC(connection net.Conn, replicaAddress, replicaID string, offset int64, getSnapshot func() []byte) error
 	Info() string
 	IsReplica() bool
-	Promote()
 	Propagate(data []byte)
-	SetReplica(address, username, password string, dispatch func(string, []resp.Value))
 }
 
 type Context struct {

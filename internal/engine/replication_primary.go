@@ -11,22 +11,19 @@ func registerReplicationCommands(registry *Registry) {
 	registry.Register("REPLCONF", handleReplconf)
 	registry.Register("PSYNC", handlePsync)
 	registry.Register("REPLICATION", handleReplication)
-	registry.Register("REPLICAOF", handleReplicaOf)
 }
 
 func handleReplconf(connContext *ConnContext, args []resp.Value) resp.Value {
 	if len(args) < 2 {
 		return resp.Value{Type: resp.TypeError, String: "ERR wrong number of arguments for 'replconf' command"}
 	}
-	subcommand := strings.ToUpper(args[0].String)
-	switch subcommand {
+	switch strings.ToUpper(args[0].String) {
 	case "LISTENING-ADDR":
 		connContext.ReplicaAddress = args[1].String
 		return resp.Value{Type: resp.TypeSimpleString, String: "OK"}
-	case "ACK":
-		return resp.Value{Type: resp.TypeSimpleString, String: "OK"}
+	default:
+		return resp.Value{Type: resp.TypeError, String: "ERR unsupported REPLCONF option"}
 	}
-	return resp.Value{Type: resp.TypeSimpleString, String: "OK"}
 }
 
 func handlePsync(connContext *ConnContext, args []resp.Value) resp.Value {

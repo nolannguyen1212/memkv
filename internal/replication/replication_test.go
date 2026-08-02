@@ -14,7 +14,6 @@ import (
 )
 
 func TestReceiveRDBFlushesBeforeApplyingSnapshot(t *testing.T) {
-	manager := NewManager(ManagerConfig{BacklogCapacity: 1024})
 	set := resp.Value{Type: resp.TypeArray, Array: []resp.Value{
 		{Type: resp.TypeBulkString, String: "SET"},
 		{Type: resp.TypeBulkString, String: "key"},
@@ -24,8 +23,9 @@ func TestReceiveRDBFlushesBeforeApplyingSnapshot(t *testing.T) {
 	stream := fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
 
 	var commands []string
-	err := manager.receiveRDB(bufio.NewReader(bytes.NewBufferString(stream)), func(name string, _ []resp.Value) {
+	err := receiveSnapshot(bufio.NewReader(bytes.NewBufferString(stream)), func(name string, _ []resp.Value) error {
 		commands = append(commands, name)
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -35,8 +35,36 @@ func TestReceiveRDBFlushesBeforeApplyingSnapshot(t *testing.T) {
 	}
 }
 
+func TestReceiveSnapshotValidatesBeforeFlushing(t *testing.T) {
+	payload := "not-resp"
+	stream := fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
+	called := false
+
+	err := receiveSnapshot(bufio.NewReader(bytes.NewBufferString(stream)), func(string, []resp.Value) error {
+		called = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("receiveSnapshot should reject an invalid payload")
+	}
+	if called {
+		t.Fatal("receiveSnapshot applied commands before validating the payload")
+	}
+}
+
+func TestParseFullResync(t *testing.T) {
+	replicationID, offset, err := parseFullResync("+FULLRESYNC stream-id 42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replicationID != "stream-id" || offset != 42 {
+		t.Fatalf("parseFullResync() = %q, %d", replicationID, offset)
+	}
+}
+
 func TestPartialSyncHasNoGapBeforeReplicaRegistration(t *testing.T) {
 	manager := NewManager(ManagerConfig{BacklogCapacity: 1024})
+	defer manager.Close()
 	initial := []byte("initial")
 	manager.Propagate(initial)
 
