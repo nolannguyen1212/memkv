@@ -132,7 +132,6 @@ sequenceDiagram
         C->>P: Write command
         P->>B: Append command
         P->>R: Stream command
-        R-->>P: ACK replication offset
     end
 ```
 
