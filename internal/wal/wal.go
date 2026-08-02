@@ -102,6 +102,15 @@ func (log *Log) LoadBatchesFrom(path string, startOffset int64, dispatch func([]
 	}
 
 	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+
+	if err != nil {
+		return err
+	}
+
+	if startOffset > info.Size() {
+		return fmt.Errorf("WAL start offset %d exceeds file size %d", startOffset, info.Size())
+	}
 
 	if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
 		return err

@@ -205,7 +205,7 @@ func TestWALRewriteIsDeterministic(t *testing.T) {
 }
 
 func TestSnapshotRoundTripIncludesTypedSortedSet(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dump.vksp")
+	path := filepath.Join(t.TempDir(), "dump.mksp")
 	snapshotFile := snapshot.New(true)
 	defer func() { _ = snapshotFile.Close() }()
 
@@ -256,7 +256,7 @@ func TestWALLoadRejectsTruncatedCommand(t *testing.T) {
 }
 
 func TestSnapshotLoadRejectsTruncatedSnapshot(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "truncated.vksp")
+	path := filepath.Join(t.TempDir(), "truncated.mksp")
 
 	if err := os.WriteFile(path, []byte{0x7f, 0x01}, 0o600); err != nil {
 		t.Fatal(err)
@@ -567,5 +567,23 @@ func TestWALLoadFromCheckpointOffset(t *testing.T) {
 
 	if err := log.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWALRejectsCheckpointOffsetPastEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memkv.wal")
+	log, err := wallog.Open(path, true)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = log.Close() }()
+	err = log.LoadBatchesFrom(path, 1, func([]wallog.Command) error {
+		return nil
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "exceeds file size") {
+		t.Fatalf("LoadBatchesFrom() error = %v, want offset error", err)
 	}
 }
