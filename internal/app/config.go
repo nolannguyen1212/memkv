@@ -69,12 +69,12 @@ type ExpirationConfig struct {
 }
 
 type MemoryConfig struct {
-	KeyLimit      *int   `yaml:"key_limit"`
-	EvictStrategy string `yaml:"evict_strategy"`
+	MaxKeys *int `yaml:"max_keys"`
 }
 
 func LoadConfig(path string) (Config, error) {
 	data, err := os.ReadFile(path)
+
 	if err != nil {
 		return Config{}, fmt.Errorf("read config %q: %w", path, err)
 	}
@@ -82,12 +82,15 @@ func LoadConfig(path string) (Config, error) {
 	var cfg Config
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
+
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config %q: %w", path, err)
 	}
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate config %q: %w", path, err)
 	}
+
 	return cfg, nil
 }
 
@@ -95,16 +98,23 @@ func (c Config) Validate() error {
 	if _, _, err := net.SplitHostPort(c.Server.Address); err != nil {
 		return fmt.Errorf("server.addr %q: %w", c.Server.Address, err)
 	}
-	if c.Server.ReadTimeout <= 0 || c.Server.WriteTimeout <= 0 {
-		return fmt.Errorf("server timeouts must be positive")
+
+	if c.Server.ReadTimeout <= 0 {
+		return fmt.Errorf("server.read_timeout must be positive")
 	}
-	limits := c.RESPLimits()
-	if limits.MaxBulkLength <= 0 || limits.MaxArrayLength <= 0 || limits.MaxDepth <= 0 || limits.MaxLineLength <= 0 {
+
+	if c.Server.WriteTimeout <= 0 {
+		return fmt.Errorf("server.write_timeout must be positive")
+	}
+
+	if !validRESPLimits(c.RESPLimits()) {
 		return fmt.Errorf("server.resp limits must be positive")
 	}
+
 	if c.Replication.BacklogSize <= 0 {
 		return fmt.Errorf("replication.backlog_size must be positive")
 	}
+
 	switch c.Replication.Role {
 	case "primary":
 		if c.Replication.PrimaryAddress != "" {
@@ -114,54 +124,114 @@ func (c Config) Validate() error {
 		if _, _, err := net.SplitHostPort(c.Replication.PrimaryAddress); err != nil {
 			return fmt.Errorf("replication.primary_addr %q: %w", c.Replication.PrimaryAddress, err)
 		}
-		if c.Replication.Username != "" && c.Replication.Username != "default" {
+
+		if invalidReplicationUsername(c.Replication.Username) {
 			return fmt.Errorf("replication.username must be empty or %q until ACL users are supported", "default")
+		}
+
+		if replicaPersistenceEnabled(c.Persistence) {
+			return fmt.Errorf("persistence must be disabled on a replica")
 		}
 	default:
 		return fmt.Errorf("replication.role must be %q or %q", "primary", "replica")
 	}
+
 	if c.Datastructure.Expiration.CheckInterval <= 0 {
 		return fmt.Errorf("datastructure.expiration.check_interval must be positive")
 	}
+
 	if c.Persistence.WAL.Enabled {
 		if strings.TrimSpace(c.Persistence.WAL.Filename) == "" {
 			return fmt.Errorf("persistence.wal.filename is required when WAL is enabled")
 		}
+
 		if c.Persistence.WAL.RewriteInterval <= 0 {
 			return fmt.Errorf("persistence.wal.rewrite_interval must be positive when WAL is enabled")
 		}
+
 		if c.Persistence.WAL.MaxSizeMB < 0 {
 			return fmt.Errorf("persistence.wal.max_size_mb cannot be negative")
 		}
 	}
-	if c.Persistence.Snapshot.Enabled && strings.TrimSpace(c.Persistence.Snapshot.Filename) == "" {
+
+	if snapshotFilenameMissing(c.Persistence.Snapshot) {
 		return fmt.Errorf("persistence.snapshot.filename is required when snapshot is enabled")
 	}
-	if c.Memory.KeyLimit != nil && *c.Memory.KeyLimit <= 0 {
-		return fmt.Errorf("memory.key_limit must be positive when set")
+
+	if invalidMaxKeys(c.Memory.MaxKeys) {
+		return fmt.Errorf("memory.max_keys must be positive when set")
 	}
-	switch c.Memory.EvictStrategy {
-	case "", "lru":
-	default:
-		return fmt.Errorf("memory.evict_strategy %q is not supported", c.Memory.EvictStrategy)
-	}
+
 	return nil
+}
+
+func validRESPLimits(limits resp.Limits) bool {
+	if limits.MaxBulkLength <= 0 {
+		return false
+	}
+
+	if limits.MaxArrayLength <= 0 {
+		return false
+	}
+
+	if limits.MaxDepth <= 0 {
+		return false
+	}
+
+	return limits.MaxLineLength > 0
+}
+
+func invalidReplicationUsername(username string) bool {
+	if username == "" {
+		return false
+	}
+
+	return username != "default"
+}
+
+func replicaPersistenceEnabled(config PersistenceConfig) bool {
+	if config.WAL.Enabled {
+		return true
+	}
+
+	return config.Snapshot.Enabled
+}
+
+func snapshotFilenameMissing(config SnapshotConfig) bool {
+	if !config.Enabled {
+		return false
+	}
+
+	return strings.TrimSpace(config.Filename) == ""
+}
+
+func invalidMaxKeys(maxKeys *int) bool {
+	if maxKeys == nil {
+		return false
+	}
+
+	return *maxKeys <= 0
 }
 
 func (c Config) RESPLimits() resp.Limits {
 	limits := resp.DefaultLimits()
+
 	if c.Server.RESP.MaxBulkLength != 0 {
 		limits.MaxBulkLength = c.Server.RESP.MaxBulkLength
 	}
+
 	if c.Server.RESP.MaxArrayLength != 0 {
 		limits.MaxArrayLength = c.Server.RESP.MaxArrayLength
 	}
+
 	if c.Server.RESP.MaxDepth != 0 {
 		limits.MaxDepth = c.Server.RESP.MaxDepth
 	}
+
 	if c.Server.RESP.MaxLineLength != 0 {
 		limits.MaxLineLength = c.Server.RESP.MaxLineLength
 	}
+
 	return limits
 }
 

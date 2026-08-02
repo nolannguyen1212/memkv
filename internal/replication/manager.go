@@ -26,9 +26,15 @@ const (
 	defaultReplicaQueueCapacity = 256
 )
 
-type ApplyCommand func(mutation.Command) error
 type ApplySnapshot func(store.LogicalSnapshot) error
 type ApplyBatch func(mutation.Batch) error
+type SnapshotCapture = func() (store.LogicalSnapshot, int64, error)
+
+type ReplicaConfig struct {
+	Address  string
+	Username string
+	Password string
+}
 
 type Command = mutation.Command
 
@@ -51,6 +57,7 @@ func newReplicaConnection(address string, connection net.Conn) *replicaConnectio
 
 func (replica *replicaConnection) enqueue(data []byte) bool {
 	copyOfData := append([]byte(nil), data...)
+
 	select {
 	case replica.queue <- copyOfData:
 		return true
@@ -59,7 +66,6 @@ func (replica *replicaConnection) enqueue(data []byte) bool {
 	default:
 		return false
 	}
-
 }
 
 func (replica *replicaConnection) close() {
@@ -93,9 +99,11 @@ type Manager struct {
 
 func NewManager(config ManagerConfig) *Manager {
 	logger := config.Logger
+
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+
 	return &Manager{
 		role:             RolePrimary,
 		primaryStreamID:  replicationID(),
@@ -107,18 +115,22 @@ func NewManager(config ManagerConfig) *Manager {
 
 func replicationID() string {
 	value := make([]byte, 20)
+
 	if _, err := rand.Read(value); err == nil {
 		return hex.EncodeToString(value)
 	}
+
 	return hex.EncodeToString([]byte(fmt.Sprintf("%020d", time.Now().UnixNano())))
 }
 
 func (manager *Manager) Close() error {
 	manager.mutex.Lock()
+
 	if manager.replicaCancel != nil {
 		manager.replicaCancel()
 		manager.replicaCancel = nil
 	}
+
 	primaryConnection := manager.primaryConnection
 	manager.primaryConnection = nil
 	replicas := append([]*replicaConnection(nil), manager.replicas...)
@@ -126,12 +138,15 @@ func (manager *Manager) Close() error {
 	manager.mutex.Unlock()
 
 	var firstErr error
+
 	if primaryConnection != nil {
 		firstErr = primaryConnection.Close()
 	}
+
 	for _, replica := range replicas {
 		replica.close()
 	}
+
 	manager.waitGroup.Wait()
 	return firstErr
 }
@@ -156,6 +171,7 @@ func (manager *Manager) propagate(data []byte) {
 	replicas := manager.replicaSnapshot()
 
 	manager.logger.Debug("replication propagated", "replicas", len(replicas), "bytes", len(data))
+
 	for _, replica := range replicas {
 		if !replica.enqueue(data) {
 			manager.removeReplica(replica)
@@ -165,17 +181,22 @@ func (manager *Manager) propagate(data []byte) {
 
 func encodeMutationBatch(batch mutation.Batch) []byte {
 	values := make([]resp.Value, len(batch))
+
 	for index, command := range batch {
 		items := make([]resp.Value, len(command.Args)+1)
 		items[0] = resp.Value{Type: resp.TypeBulkString, String: command.Name}
+
 		for argumentIndex, argument := range command.Args {
 			items[argumentIndex+1] = resp.Value{Type: resp.TypeBulkString, String: argument}
 		}
+
 		values[index] = resp.Value{Type: resp.TypeArray, Array: items}
 	}
+
 	if len(values) == 1 {
 		return []byte(resp.Encode(values[0]))
 	}
+
 	return []byte(resp.Encode(resp.Value{Type: resp.TypeArray, Array: values}))
 }
 
@@ -193,12 +214,14 @@ func (manager *Manager) addReplica(replica *replicaConnection) {
 
 func (manager *Manager) removeReplica(target *replicaConnection) {
 	manager.mutex.Lock()
+
 	for index, replica := range manager.replicas {
 		if replica == target {
 			manager.replicas = append(manager.replicas[:index], manager.replicas[index+1:]...)
 			break
 		}
 	}
+
 	manager.mutex.Unlock()
 	target.close()
 }
@@ -211,15 +234,22 @@ func (manager *Manager) ActiveReplicas() []string {
 
 func (manager *Manager) activeReplicasLocked() []string {
 	addresses := make([]string, 0, len(manager.replicas))
+
 	for _, replica := range manager.replicas {
 		if replica.Address != "" {
 			addresses = append(addresses, replica.Address)
 		}
 	}
+
 	return addresses
 }
 
-func (manager *Manager) StartReplica(parent context.Context, address, username, password string, apply ApplyCommand, applyBatch ApplyBatch, restore ApplySnapshot) {
+func (manager *Manager) StartReplica(
+	parent context.Context,
+	config ReplicaConfig,
+	apply ApplyBatch,
+	restore ApplySnapshot,
+) {
 	ctx, cancel := context.WithCancel(parent)
 
 	manager.mutex.Lock()
@@ -229,7 +259,7 @@ func (manager *Manager) StartReplica(parent context.Context, address, username, 
 	manager.mutex.Unlock()
 
 	manager.waitGroup.Go(func() {
-		manager.reconnectLoop(ctx, address, username, password, apply, applyBatch, restore)
+		manager.reconnectLoop(ctx, config, apply, restore)
 	})
 }
 
@@ -250,6 +280,7 @@ func (manager *Manager) Info() string {
 	defer manager.mutex.RUnlock()
 
 	role := "primary"
+
 	if manager.role == RoleReplica {
 		role = "replica"
 	}
@@ -268,5 +299,12 @@ func (manager *Manager) currentOffsetLocked() int64 {
 	if manager.role == RoleReplica {
 		return manager.replicationOffset.Load()
 	}
+
 	return manager.backlog.CurrentOffset()
+}
+
+func (manager *Manager) Offset() int64 {
+	manager.mutex.RLock()
+	defer manager.mutex.RUnlock()
+	return manager.currentOffsetLocked()
 }

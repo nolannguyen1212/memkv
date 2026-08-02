@@ -46,9 +46,11 @@ func New(config Config, ctx *engine.Context, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+
 	if config.RESPLimits == (resp.Limits{}) {
 		config.RESPLimits = resp.DefaultLimits()
 	}
+
 	return &Server{
 		config:       config,
 		logger:       logger,
@@ -62,6 +64,7 @@ func New(config Config, ctx *engine.Context, logger *slog.Logger) *Server {
 
 func (server *Server) ListenAndServe() error {
 	listener, err := net.Listen(networkType, server.config.Address)
+
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", server.config.Address, err)
 	}
@@ -71,6 +74,7 @@ func (server *Server) ListenAndServe() error {
 
 func (server *Server) Serve(listener net.Listener) error {
 	server.listenerMu.Lock()
+
 	select {
 	case <-server.shutdownChan:
 		server.listenerMu.Unlock()
@@ -80,10 +84,12 @@ func (server *Server) Serve(listener net.Listener) error {
 			server.listenerMu.Unlock()
 			return errors.Join(fmt.Errorf("server already serving"), listener.Close())
 		}
+
 		server.listener = listener
 		close(server.ready)
 		server.listenerMu.Unlock()
 	}
+
 	server.logger.Info("server listening", "address", listener.Addr().String())
 
 	return server.acceptConnections()
@@ -96,15 +102,18 @@ func (server *Server) Ready() <-chan struct{} {
 func (server *Server) acceptConnections() error {
 	for {
 		conn, err := server.listener.Accept()
+
 		if err != nil {
 			select {
 			case <-server.shutdownChan:
 				return nil
 			default:
 			}
+
 			server.logger.Error("accept connection", "error", err)
 			continue
 		}
+
 		if !server.trackConnection(conn) {
 			_ = conn.Close()
 			continue
@@ -124,11 +133,13 @@ func (server *Server) Close(shutdownContext context.Context) error {
 	server.closeOnce.Do(func() {
 		close(server.shutdownChan)
 		server.listenerMu.Lock()
+
 		if server.listener != nil {
 			if err := server.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 				server.shutdownErr = err
 			}
 		}
+
 		server.listenerMu.Unlock()
 		server.shutdownErr = errors.Join(server.shutdownErr, server.closeConnections())
 	})
@@ -151,6 +162,7 @@ func (server *Server) Close(shutdownContext context.Context) error {
 func (server *Server) trackConnection(conn net.Conn) bool {
 	server.connMutex.Lock()
 	defer server.connMutex.Unlock()
+
 	select {
 	case <-server.shutdownChan:
 		return false
@@ -171,16 +183,19 @@ func (server *Server) closeConnections() error {
 	server.connMutex.Lock()
 	defer server.connMutex.Unlock()
 	var closeErr error
+
 	for conn := range server.connections {
 		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			closeErr = errors.Join(closeErr, err)
 		}
 	}
+
 	return closeErr
 }
 
 func (server *Server) handleConnection(conn net.Conn) {
 	connectionTransferred := server.serveConnection(conn)
+
 	if !connectionTransferred {
 		_ = conn.Close()
 	}
@@ -200,37 +215,52 @@ func (server *Server) serveConnection(conn net.Conn) bool {
 		}
 
 		request, err := resp.DecodeWithLimits(reader, server.config.RESPLimits)
+
 		if err != nil {
 			return false
 		}
 
 		command, valid := parseCommand(request)
+
 		if !valid {
-			if err := server.writeResponse(writer, conn, engine.Result{Type: engine.ResultError, String: "ERR invalid command frame"}); err != nil {
+			response := engine.Result{
+				Type:   engine.ResultError,
+				String: "ERR invalid command frame",
+			}
+
+			if err := server.writeResponse(writer, conn, response); err != nil {
 				return false
 			}
+
 			continue
 		}
+
 		cmdName := command.Name
 
 		if !authenticated {
 			handled, err := server.handleUnauthenticated(conn, writer, command, &authenticated, connContext)
+
 			if err != nil {
 				return false
 			}
+
 			if handled {
 				continue
 			}
 		}
+
 		if cmdName == "PSYNC" {
 			response := connContext.SynchronizeReplica(command.Args)
 			server.ctx.CommandProcessed()
+
 			if response.Type == engine.ResultError {
 				if err := server.writeResponse(writer, conn, response); err != nil {
 					return false
 				}
+
 				continue
 			}
+
 			return true
 		}
 
@@ -240,7 +270,6 @@ func (server *Server) serveConnection(conn net.Conn) bool {
 		if err := server.writeResponse(writer, conn, response); err != nil {
 			return false
 		}
-
 	}
 }
 
@@ -248,28 +277,45 @@ func parseCommand(request resp.Value) (engine.Command, bool) {
 	if request.Type != resp.TypeArray || len(request.Array) == 0 {
 		return engine.Command{}, false
 	}
+
 	for _, value := range request.Array {
-		if value.IsNull || value.Type != resp.TypeBulkString && value.Type != resp.TypeSimpleString {
+		if !validCommandPart(value) {
 			return engine.Command{}, false
 		}
 	}
+
 	args := make([]string, len(request.Array)-1)
+
 	for index, value := range request.Array[1:] {
 		args[index] = value.String
 	}
+
 	return engine.NewCommand(request.Array[0].String, args), true
 }
 
-func (server *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer, command engine.Command, authenticated *bool, connContext *engine.ConnContext) (bool, error) {
+func validCommandPart(value resp.Value) bool {
+	return !value.IsNull &&
+		(value.Type == resp.TypeBulkString || value.Type == resp.TypeSimpleString)
+}
+
+func (server *Server) handleUnauthenticated(
+	conn net.Conn,
+	writer *bufio.Writer,
+	command engine.Command,
+	authenticated *bool,
+	connContext *engine.ConnContext,
+) (bool, error) {
 	switch command.Name {
 	case "AUTH":
 		response := engine.ExecuteCommand(connContext, command)
+
 		if response.Type == engine.ResultSimpleString && response.String == "OK" {
 			*authenticated = true
 		}
+
 		return true, server.writeResponse(writer, conn, response)
 
-	case "PING", "QUIT":
+	case "PING":
 		return false, nil
 
 	default:
@@ -282,17 +328,21 @@ func (server *Server) writeResponse(writer *bufio.Writer, conn net.Conn, result 
 	if err := conn.SetWriteDeadline(time.Now().Add(server.config.WriteTimeout)); err != nil {
 		return fmt.Errorf("set response deadline for %s: %w", conn.RemoteAddr(), err)
 	}
+
 	if _, err := writer.WriteString(resp.Encode(resultToRESP(result))); err != nil {
 		return fmt.Errorf("write response to %s: %w", conn.RemoteAddr(), err)
 	}
+
 	if err := writer.Flush(); err != nil {
 		return fmt.Errorf("flush response to %s: %w", conn.RemoteAddr(), err)
 	}
+
 	return nil
 }
 
 func resultToRESP(result engine.Result) resp.Value {
 	value := resp.Value{String: result.String, Number: result.Number, IsNull: result.IsNull}
+
 	switch result.Type {
 	case engine.ResultSimpleString:
 		value.Type = resp.TypeSimpleString
@@ -305,9 +355,11 @@ func resultToRESP(result engine.Result) resp.Value {
 	case engine.ResultArray:
 		value.Type = resp.TypeArray
 		value.Array = make([]resp.Value, len(result.Array))
+
 		for index, item := range result.Array {
 			value.Array[index] = resultToRESP(item)
 		}
 	}
+
 	return value
 }

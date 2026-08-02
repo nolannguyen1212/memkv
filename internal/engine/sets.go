@@ -21,18 +21,21 @@ func handleSadd(connContext *ConnContext, args []string) Result {
 
 	key := args[0]
 	members := extractStrings(args[1:])
+
 	if connContext.Store.CheckType(key, store.KeyTypeSet) == store.StatusWrongType {
 		return wrongTypeError()
 	}
+
 	count := connContext.Store.Set.CountMissing(key, members...)
+
 	if count == 0 {
 		return intReply(0)
 	}
+
 	record := newMutation(append([]string{"SADD", key}, members...)...)
+
 	if err := connContext.Commit(record, func() {
-		connContext.Store.PrepareWrite(key, store.KeyTypeSet, false)
 		connContext.Store.Set.Add(key, members...)
-		connContext.OnKeyWrite(key)
 	}); err != nil {
 		return persistenceError()
 	}
@@ -46,21 +49,22 @@ func handleSrem(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeSet) == store.StatusWrongType {
 		return wrongTypeError()
 	}
+
 	members := extractStrings(args[1:])
 	count := connContext.Store.Set.CountExisting(key, members...)
+
 	if count == 0 {
 		return intReply(0)
 	}
+
 	record := newMutation(append([]string{"SREM", key}, members...)...)
+
 	if err := connContext.Commit(record, func() {
 		connContext.Store.Set.Remove(key, members...)
-		connContext.OnKeyMutate(key)
-		if connContext.Store.Set.Cardinality(key) == 0 {
-			connContext.Store.RemoveEmptyKey(key, store.KeyTypeSet)
-		}
 	}); err != nil {
 		return persistenceError()
 	}
@@ -74,20 +78,25 @@ func handleSmembers(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeSet) == store.StatusWrongType {
 		return wrongTypeError()
 	}
-	connContext.OnKeyRead(key)
+
 	members, exists := connContext.Store.Set.Members(key)
+
 	if !exists {
 		return emptyArrayReply()
 	}
+
 	sort.Strings(members)
 
 	items := make([]Result, len(members))
+
 	for i, member := range members {
 		items[i] = stringReply(member)
 	}
+
 	return arrayReply(items)
 }
 
@@ -97,13 +106,15 @@ func handleSismember(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeSet) == store.StatusWrongType {
 		return wrongTypeError()
 	}
-	connContext.OnKeyRead(key)
+
 	if connContext.Store.Set.IsMember(key, args[1]) {
 		return intReply(1)
 	}
+
 	return intReply(0)
 }
 
@@ -113,10 +124,11 @@ func handleScard(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeSet) == store.StatusWrongType {
 		return wrongTypeError()
 	}
-	connContext.OnKeyRead(key)
+
 	return intReply(int64(connContext.Store.Set.Cardinality(key)))
 }
 

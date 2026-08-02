@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -29,11 +28,20 @@ type WALOffsetter interface {
 	Offset() (int64, error)
 }
 
+type SnapshotCapture = func() (store.LogicalSnapshot, int64, error)
+
 type Replicator interface {
 	ActiveReplicas() []string
-	HandlePSYNC(connection net.Conn, replicaAddress, replicaID string, offset int64, getSnapshot func() (store.LogicalSnapshot, error)) error
+	HandlePSYNC(
+		connection net.Conn,
+		replicaAddress string,
+		replicaID string,
+		offset int64,
+		captureSnapshot SnapshotCapture,
+	) error
 	Info() string
 	IsReplica() bool
+	Offset() int64
 	Propagate(batch mutation.Batch)
 }
 
@@ -53,32 +61,50 @@ type Context struct {
 	metrics           *metrics
 	connectionCounter atomic.Uint64
 	persistenceFailed atomic.Bool
-	events            chan event
+	events            chan engineEvent
 	done              chan struct{}
 	ready             chan struct{}
 	running           atomic.Bool
 	directMu          sync.Mutex
+	deriveCapacity    bool
 }
 
-func NewContext(database *store.Store, log WALAppender, replicationManager Replicator, system SystemConfig) *Context {
+func NewContext(
+	database *store.Store,
+	log WALAppender,
+	replicationManager Replicator,
+	system SystemConfig,
+) *Context {
+	return newContext(database, log, replicationManager, system, true)
+}
+
+func newContext(
+	database *store.Store,
+	log WALAppender,
+	replicationManager Replicator,
+	system SystemConfig,
+	deriveCapacity bool,
+) *Context {
 	ctx := &Context{
-		Store:       database,
-		WAL:         log,
-		Replication: replicationManager,
-		Registry:    NewRegistry(),
-		system:      system,
-		watches:     newWatchRegistry(),
-		metrics:     newMetrics(),
-		events:      make(chan event, requestQueueCapacity),
-		done:        make(chan struct{}),
-		ready:       make(chan struct{}),
+		Store:          database,
+		WAL:            log,
+		Replication:    replicationManager,
+		Registry:       NewRegistry(),
+		system:         system,
+		watches:        newWatchRegistry(),
+		metrics:        newMetrics(),
+		events:         make(chan engineEvent, requestQueueCapacity),
+		done:           make(chan struct{}),
+		ready:          make(chan struct{}),
+		deriveCapacity: deriveCapacity,
 	}
+
 	database.SetExpirationHandler(ctx.keyExpired)
+	database.SetMutationHandler(ctx.watches.notify)
 	return ctx
 }
 
 func (ctx *Context) keyExpired(key string) {
-	ctx.watches.notify(key)
 	ctx.propagate(mutation.Batch{mutation.New("DEL", key)})
 }
 
@@ -94,82 +120,6 @@ func (ctx *Context) CommandProcessed() {
 	ctx.metrics.totalCommands.Add(1)
 }
 
-func (ctx *Context) OnKeyMutate(key string) {
-	ctx.Store.Keyspace.BumpVersion(key)
-	ctx.watches.notify(key)
-}
-
-func (ctx *Context) OnKeyWrite(key string) {
-	ctx.OnKeyMutate(key)
-	ctx.Store.Eviction.RecordInsert(key)
-}
-
-func (ctx *Context) OnKeyRead(key string) {
-	ctx.Store.Eviction.RecordAccess(key)
-}
-
-func (ctx *Context) Commit(command mutation.Command, apply func()) error {
-	batch := mutation.Batch{command}
-	if err := ctx.appendWAL(batch); err != nil {
-		ctx.persistenceFailed.Store(true)
-		return err
-	}
-	apply()
-	ctx.propagate(batch)
-	return ctx.evictIfNeeded()
-}
-
-func (ctx *Context) CommitBatch(batch mutation.Batch, apply func()) error {
-	if len(batch) == 0 {
-		apply()
-		return nil
-	}
-	if err := ctx.appendWAL(batch); err != nil {
-		ctx.persistenceFailed.Store(true)
-		return err
-	}
-	apply()
-	ctx.propagate(batch)
-	return nil
-}
-
-func (ctx *Context) evictIfNeeded() error {
-	for ctx.Store.Eviction.ShouldEvict() {
-		key := ctx.Store.Eviction.NextEviction()
-		if key == "" {
-			break
-		}
-		batch := mutation.Batch{mutation.New("DEL", key)}
-		if err := ctx.appendWAL(batch); err != nil {
-			ctx.persistenceFailed.Store(true)
-			return err
-		}
-		ctx.Store.DeleteKey(key)
-		ctx.watches.notify(key)
-		ctx.propagate(batch)
-	}
-	return nil
-}
-
-func (ctx *Context) appendWAL(batch mutation.Batch) error {
-	if ctx.WAL == nil {
-		return nil
-	}
-	if batchAppender, ok := ctx.WAL.(WALBatchAppender); ok {
-		return batchAppender.AppendBatch(batch)
-	}
-	if len(batch) == 1 {
-		return ctx.WAL.Append(batch[0])
-	}
-	return fmt.Errorf("WAL does not support atomic batches")
-}
-
-func (ctx *Context) propagate(batch mutation.Batch) {
-	if ctx.Replication != nil {
-		ctx.Replication.Propagate(batch)
-	}
-}
-
 func (ctx *Context) ReplicationSnapshot() store.LogicalSnapshot {
 	return ctx.Store.Snapshot()
 }
@@ -177,11 +127,13 @@ func (ctx *Context) ReplicationSnapshot() store.LogicalSnapshot {
 func (ctx *Context) RestoreSnapshot(state store.LogicalSnapshot) error {
 	if ctx.running.Load() {
 		request := &restoreRequest{state: state, reply: make(chan error, 1)}
+
 		select {
-		case ctx.events <- event{restore: request}:
+		case ctx.events <- *request:
 		case <-ctx.done:
 			return ErrStopped
 		}
+
 		select {
 		case err := <-request.reply:
 			return err
@@ -189,6 +141,7 @@ func (ctx *Context) RestoreSnapshot(state store.LogicalSnapshot) error {
 			return ErrStopped
 		}
 	}
+
 	ctx.directMu.Lock()
 	defer ctx.directMu.Unlock()
 	return ctx.Store.Restore(state, ctx.Store.Now())
@@ -226,9 +179,11 @@ func (registry *Registry) Register(name string, handler Handler) {
 
 func (registry *Registry) register(name string, handler Handler, options ...commandOption) {
 	command := registeredCommand{handler: handler, syntax: commandSpec{maxArgs: -1}}
+
 	for _, option := range options {
 		option(&command)
 	}
+
 	registry.commands[strings.ToUpper(name)] = command
 }
 
@@ -243,46 +198,51 @@ func (registry *Registry) command(name string) (registeredCommand, bool) {
 }
 
 func Execute(connContext *ConnContext, name string, args []string) Result {
-	return execute(connContext, NewCommand(name, args))
+	return ExecuteCommand(connContext, NewCommand(name, args))
 }
 
-func execute(connContext *ConnContext, command Command) Result {
-	if connContext.running.Load() {
-		result, err := connContext.SubmitCommand(connContext, command)
-		if err != nil {
-			return errorReply("ERR engine stopped")
-		}
-		return result
-	}
+func BootstrapExecute(connContext *ConnContext, name string, args []string) Result {
 	connContext.directMu.Lock()
 	defer connContext.directMu.Unlock()
+
+	if connContext.running.Load() {
+		return errorReply("ERR bootstrap execution is unavailable while engine is running")
+	}
+
 	connContext.Store.Maintain(connContext.Store.Now())
-	return executeOwned(connContext, command.Name, command.Args)
+	return executeOwned(connContext, name, args)
 }
 
 func executeOwned(connContext *ConnContext, name string, args []string) Result {
 	command, exists := connContext.Registry.command(name)
-	if connContext.Transaction.Status == TransactionQueuing && (!exists || !command.transactionControl) {
+
+	if shouldQueue(connContext, command, exists) {
 		if !exists {
 			connContext.Transaction.Dirty = true
 			return errorReply("ERR unknown command '" + name + "'")
 		}
+
 		if validationError := validateRegisteredCommand(name, command, args); validationError != nil {
 			connContext.Transaction.Dirty = true
 			return *validationError
 		}
+
 		connContext.Transaction.Enqueue(name, args)
 		return Result{Type: ResultSimpleString, String: "QUEUED"}
 	}
+
 	if !exists {
 		return errorReply("ERR unknown command '" + name + "'")
 	}
+
 	if validationError := validateRegisteredCommand(name, command, args); validationError != nil {
 		return *validationError
 	}
-	if connContext.Connection != nil && connContext.Replication != nil && connContext.Replication.IsReplica() && command.write {
+
+	if isReadOnlyWrite(connContext, command) {
 		return Result{Type: ResultError, String: "READONLY You can't write against a read only replica."}
 	}
+
 	if command.write && connContext.persistenceFailed.Load() {
 		return persistenceError()
 	}
@@ -290,14 +250,29 @@ func executeOwned(connContext *ConnContext, name string, args []string) Result {
 	return command.handler(connContext, args)
 }
 
+func shouldQueue(connContext *ConnContext, command registeredCommand, exists bool) bool {
+	return connContext.Transaction.Status == TransactionQueuing &&
+		(!exists || !command.transactionControl)
+}
+
+func isReadOnlyWrite(connContext *ConnContext, command registeredCommand) bool {
+	return command.write &&
+		connContext.Connection != nil &&
+		connContext.Replication != nil &&
+		connContext.Replication.IsReplica()
+}
+
 func executeCommand(connContext *ConnContext, name string, args []string) Result {
 	command, exists := connContext.Registry.command(name)
+
 	if !exists {
 		return errorReply("ERR unknown command '" + name + "'")
 	}
+
 	if validationError := validateRegisteredCommand(name, command, args); validationError != nil {
 		return *validationError
 	}
+
 	return command.handler(connContext, args)
 }
 
@@ -306,9 +281,11 @@ func validateRegisteredCommand(name string, command registeredCommand, args []st
 		result := wrongArgCountError(strings.ToLower(name))
 		return &result
 	}
+
 	if !command.syntax.valid(args) {
 		result := errorReply("ERR syntax error")
 		return &result
 	}
+
 	return nil
 }

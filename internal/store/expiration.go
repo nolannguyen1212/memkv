@@ -18,6 +18,7 @@ func (items expirationHeap) Less(i, j int) bool {
 	if items[i].at == items[j].at {
 		return items[i].key < items[j].key
 	}
+
 	return items[i].at < items[j].at
 }
 
@@ -41,6 +42,7 @@ func (store *Store) scheduleExpiration(key string, entry *Entry) {
 	if entry.ExpiredAt.IsZero() {
 		return
 	}
+
 	heap.Push(&store.expirations, expirationItem{
 		key:     key,
 		at:      entry.ExpiredAt.UnixMilli(),

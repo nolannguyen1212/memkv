@@ -14,6 +14,7 @@ func (spec commandSpec) valid(args []string) bool {
 	if !spec.validArgumentCount(args) {
 		return false
 	}
+
 	return spec.validate == nil || spec.validate(args)
 }
 
@@ -49,9 +50,11 @@ func validateSetSyntax(args []string) bool {
 	if len(args) == 2 {
 		return true
 	}
+
 	if len(args) != 4 {
 		return false
 	}
+
 	switch strings.ToUpper(args[2]) {
 	case "EX", "PX", "EXAT", "PXAT":
 		return true

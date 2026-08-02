@@ -13,5 +13,11 @@ func NewCommand(name string, arguments []string) Command {
 }
 
 func ExecuteCommand(connection *ConnContext, command Command) Result {
-	return execute(connection, command)
+	result, err := connection.SubmitCommand(connection, command)
+
+	if err != nil {
+		return errorReply("ERR engine stopped")
+	}
+
+	return result
 }

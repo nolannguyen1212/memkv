@@ -33,6 +33,7 @@ func Open(path string, enabled bool) (*Log, error) {
 	}
 
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, filePerm)
+
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +53,9 @@ func (log *Log) append(batch mutation.Batch) error {
 	if !log.enabled || log.isReplaying.Load() {
 		return nil
 	}
+
 	record, err := encodeRecord(batch)
+
 	if err != nil {
 		return err
 	}
@@ -63,6 +66,7 @@ func (log *Log) append(batch mutation.Batch) error {
 	if err := writeAll(log.file, record); err != nil {
 		return err
 	}
+
 	return log.file.Sync()
 }
 
@@ -73,6 +77,7 @@ func (log *Log) Load(path string, dispatch func(mutation.Command) error) error {
 				return fmt.Errorf("replay %s: %w", command.Name, err)
 			}
 		}
+
 		return nil
 	})
 }
@@ -85,15 +90,19 @@ func (log *Log) LoadBatchesFrom(path string, startOffset int64, dispatch func([]
 	if !log.enabled {
 		return nil
 	}
+
 	if startOffset < 0 {
 		return fmt.Errorf("WAL start offset cannot be negative")
 	}
 
 	file, err := os.Open(path)
+
 	if err != nil {
 		return err
 	}
+
 	defer func() { _ = file.Close() }()
+
 	if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
 		return err
 	}
@@ -102,17 +111,22 @@ func (log *Log) LoadBatchesFrom(path string, startOffset int64, dispatch func([]
 	defer log.isReplaying.Store(false)
 
 	offset := startOffset
+
 	for {
 		commands, recordSize, err := decodeRecord(file, offset)
+
 		if err == io.EOF {
 			return nil
 		}
+
 		if err != nil {
 			return err
 		}
+
 		if err := dispatch(commands); err != nil {
 			return fmt.Errorf("replay WAL batch at offset %d: %w", offset, err)
 		}
+
 		offset += recordSize
 	}
 }
@@ -121,12 +135,15 @@ func (log *Log) Offset() (int64, error) {
 	if !log.enabled {
 		return 0, nil
 	}
+
 	log.mutex.Lock()
 	defer log.mutex.Unlock()
 	info, err := log.file.Stat()
+
 	if err != nil {
 		return 0, err
 	}
+
 	return info.Size(), nil
 }
 
@@ -134,33 +151,43 @@ func (log *Log) RepairTail() error {
 	if !log.enabled {
 		return nil
 	}
+
 	log.mutex.Lock()
 	defer log.mutex.Unlock()
 
 	if _, err := log.file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
+
 	var offset int64
+
 	for {
 		_, size, err := decodeRecord(log.file, offset)
+
 		if err == io.EOF {
 			_, seekErr := log.file.Seek(0, io.SeekEnd)
 			return seekErr
 		}
+
 		if err == nil {
 			offset += size
 			continue
 		}
+
 		var truncated *truncatedRecordError
+
 		if !errors.As(err, &truncated) {
 			return err
 		}
+
 		if err := log.file.Truncate(offset); err != nil {
 			return err
 		}
+
 		if err := log.file.Sync(); err != nil {
 			return err
 		}
+
 		_, err = log.file.Seek(0, io.SeekEnd)
 		return err
 	}
@@ -174,10 +201,13 @@ func (log *Log) SizeMB() float64 {
 	if !log.enabled || log.file == nil {
 		return 0
 	}
+
 	info, err := log.file.Stat()
+
 	if err != nil {
 		return 0
 	}
+
 	return float64(info.Size()) / (1024 * 1024)
 }
 
@@ -185,6 +215,7 @@ func (log *Log) Close() error {
 	if !log.enabled {
 		return nil
 	}
+
 	return log.file.Close()
 }
 
@@ -201,95 +232,68 @@ func (log *Log) RewriteAll(
 
 	temp := path + tempSuffix
 	defer removeTemporaryWAL(temp)
+
 	if err := writeRewriteFile(temp, state); err != nil {
 		return err
 	}
+
 	newFile, err := os.OpenFile(temp, os.O_APPEND|os.O_RDWR, filePerm)
+
 	if err != nil {
 		return err
 	}
+
 	if err := os.Rename(temp, path); err != nil {
 		return errors.Join(err, newFile.Close())
 	}
+
 	oldFile := log.file
 	log.file = newFile
 	var closeErr error
+
 	if oldFile != nil {
 		closeErr = oldFile.Close()
 	}
+
 	return errors.Join(closeErr, syncDirectory(filepath.Dir(path)))
 }
 
 func writeRewriteFile(path string, state store.LogicalSnapshot) error {
 	file, err := os.Create(path)
+
 	if err != nil {
 		return err
 	}
+
 	if err := writeLogicalSnapshot(file, state); err != nil {
 		return errors.Join(err, file.Close())
 	}
+
 	if err := file.Sync(); err != nil {
 		return errors.Join(err, file.Close())
 	}
+
 	return file.Close()
 }
 
 func writeLogicalSnapshot(file *os.File, state store.LogicalSnapshot) error {
-	for _, key := range sortedKeys(state.Strings) {
-		entry := state.Strings[key]
-		if err := writeCmd(file, "SET", key, entry.Value); err != nil {
-			return err
-		}
+	keys := state.FIFO
+
+	if len(keys) == 0 {
+		keys = sortedKeys(state.Keyspace)
 	}
 
-	for _, key := range sortedKeys(state.Sets) {
-		entry := state.Sets[key]
-		if len(entry.Members) == 0 {
-			continue
-		}
-		members := sortedKeys(entry.Members)
-		if err := writeCmd(file, append([]string{"SADD", key}, members...)...); err != nil {
-			return err
-		}
-	}
-
-	for _, key := range sortedKeys(state.Lists) {
-		values := state.Lists[key]
-		if len(values) > 0 {
-			if err := writeCmd(file, append([]string{"RPUSH", key}, values...)...); err != nil {
-				return err
-			}
-		}
-	}
-
-	for _, key := range sortedKeys(state.Hashes) {
-		hash := state.Hashes[key]
-		for _, field := range sortedKeys(hash) {
-			value := hash[field]
-			if err := writeCmd(file, "HSET", key, field, value); err != nil {
-				return err
-			}
-		}
-	}
-
-	for _, key := range sortedKeys(state.SortedSets) {
-		members := state.SortedSets[key]
-		args := []string{"ZADD", key}
-		for _, member := range sortedKeys(members) {
-			score := members[member]
-			args = append(args, strconv.FormatFloat(score, 'g', -1, 64), member)
-		}
-		if len(args) > 2 {
-			if err := writeCmd(file, args...); err != nil {
-				return err
-			}
-		}
-	}
-
-	for _, key := range sortedKeys(state.Keyspace) {
+	for _, key := range keys {
 		metadata := state.Keyspace[key]
+
+		if err := writeSnapshotValue(file, state, key, metadata.Type); err != nil {
+			return err
+		}
+
 		if !metadata.ExpiredAt.IsZero() {
-			if err := writeCmd(file, "PEXPIREAT", key, strconv.FormatInt(metadata.ExpiredAt.UnixMilli(), 10)); err != nil {
+			deadline := strconv.FormatInt(metadata.ExpiredAt.UnixMilli(), 10)
+
+			if err := writeCmd(file, "PEXPIREAT", key, deadline); err != nil {
 				return err
 			}
 		}
@@ -298,11 +302,50 @@ func writeLogicalSnapshot(file *os.File, state store.LogicalSnapshot) error {
 	return nil
 }
 
+func writeSnapshotValue(
+	file *os.File,
+	state store.LogicalSnapshot,
+	key string,
+	keyType store.KeyType,
+) error {
+	switch keyType {
+	case store.KeyTypeString:
+		return writeCmd(file, "SET", key, state.Strings[key].Value)
+	case store.KeyTypeSet:
+		args := append([]string{"SADD", key}, sortedKeys(state.Sets[key].Members)...)
+		return writeCmd(file, args...)
+	case store.KeyTypeList:
+		args := append([]string{"RPUSH", key}, state.Lists[key]...)
+		return writeCmd(file, args...)
+	case store.KeyTypeHash:
+		args := []string{"HSET", key}
+
+		for _, field := range sortedKeys(state.Hashes[key]) {
+			args = append(args, field, state.Hashes[key][field])
+		}
+
+		return writeCmd(file, args...)
+	case store.KeyTypeSortedSet:
+		args := []string{"ZADD", key}
+
+		for _, member := range sortedKeys(state.SortedSets[key]) {
+			score := state.SortedSets[key][member]
+			args = append(args, strconv.FormatFloat(score, 'g', -1, 64), member)
+		}
+
+		return writeCmd(file, args...)
+	default:
+		return fmt.Errorf("cannot rewrite key %q with type %q", key, keyType)
+	}
+}
+
 func sortedKeys[V any](values map[string]V) []string {
 	keys := make([]string, 0, len(values))
+
 	for key := range values {
 		keys = append(keys, key)
 	}
+
 	sort.Strings(keys)
 	return keys
 }
@@ -313,33 +356,42 @@ func removeTemporaryWAL(path string) {
 
 func syncDirectory(path string) error {
 	directory, err := os.Open(path)
+
 	if err != nil {
 		return err
 	}
+
 	if err := directory.Sync(); err != nil {
 		return errors.Join(err, directory.Close())
 	}
+
 	return directory.Close()
 }
 
 func writeCmd(file *os.File, args ...string) error {
 	record, err := encodeRecord(mutation.Batch{mutation.New(args[0], args[1:]...)})
+
 	if err != nil {
 		return err
 	}
+
 	return writeAll(file, record)
 }
 
 func writeAll(writer io.Writer, data []byte) error {
 	for len(data) > 0 {
 		written, err := writer.Write(data)
+
 		if err != nil {
 			return err
 		}
+
 		if written == 0 {
 			return io.ErrShortWrite
 		}
+
 		data = data[written:]
 	}
+
 	return nil
 }

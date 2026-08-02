@@ -22,15 +22,16 @@ func handleLpush(connContext *ConnContext, args []string) Result {
 
 	key := args[0]
 	values := extractStrings(args[1:])
+
 	if connContext.Store.CheckType(key, store.KeyTypeList) == store.StatusWrongType {
 		return wrongTypeError()
 	}
+
 	length := connContext.Store.List.Length(key) + len(values)
 	record := newMutation(append([]string{"LPUSH", key}, values...)...)
+
 	if err := connContext.Commit(record, func() {
-		connContext.Store.PrepareWrite(key, store.KeyTypeList, false)
 		connContext.Store.List.LeftPush(key, values...)
-		connContext.OnKeyWrite(key)
 	}); err != nil {
 		return persistenceError()
 	}
@@ -45,15 +46,16 @@ func handleRpush(connContext *ConnContext, args []string) Result {
 
 	key := args[0]
 	values := extractStrings(args[1:])
+
 	if connContext.Store.CheckType(key, store.KeyTypeList) == store.StatusWrongType {
 		return wrongTypeError()
 	}
+
 	length := connContext.Store.List.Length(key) + len(values)
 	record := newMutation(append([]string{"RPUSH", key}, values...)...)
+
 	if err := connContext.Commit(record, func() {
-		connContext.Store.PrepareWrite(key, store.KeyTypeList, false)
 		connContext.Store.List.RightPush(key, values...)
-		connContext.OnKeyWrite(key)
 	}); err != nil {
 		return persistenceError()
 	}
@@ -67,34 +69,39 @@ func handleLpop(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeList) == store.StatusWrongType {
 		return wrongTypeError()
 	}
+
 	count := 1
+
 	if len(args) > 1 {
 		parsedCount, err := strconv.Atoi(args[1])
+
 		if err != nil {
 			return notIntegerError()
 		}
+
 		if parsedCount < 0 {
 			return errorReply("ERR count must be non-negative")
 		}
+
 		count = parsedCount
 	}
 
 	values := connContext.Store.List.PeekLeft(key, count)
+
 	if len(values) > 0 {
 		record := newMutation(append([]string{"LPOP"}, extractStrings(args)...)...)
+
 		if err := connContext.Commit(record, func() {
 			connContext.Store.List.LeftPop(key, count)
-			connContext.OnKeyMutate(key)
-			if connContext.Store.List.Length(key) == 0 {
-				connContext.Store.RemoveEmptyKey(key, store.KeyTypeList)
-			}
 		}); err != nil {
 			return persistenceError()
 		}
 	}
+
 	return popReply(values, len(args) == 2)
 }
 
@@ -104,34 +111,39 @@ func handleRpop(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeList) == store.StatusWrongType {
 		return wrongTypeError()
 	}
+
 	count := 1
+
 	if len(args) > 1 {
 		parsedCount, err := strconv.Atoi(args[1])
+
 		if err != nil {
 			return notIntegerError()
 		}
+
 		if parsedCount < 0 {
 			return errorReply("ERR count must be non-negative")
 		}
+
 		count = parsedCount
 	}
 
 	values := connContext.Store.List.PeekRight(key, count)
+
 	if len(values) > 0 {
 		record := newMutation(append([]string{"RPOP"}, extractStrings(args)...)...)
+
 		if err := connContext.Commit(record, func() {
 			connContext.Store.List.RightPop(key, count)
-			connContext.OnKeyMutate(key)
-			if connContext.Store.List.Length(key) == 0 {
-				connContext.Store.RemoveEmptyKey(key, store.KeyTypeList)
-			}
 		}); err != nil {
 			return persistenceError()
 		}
 	}
+
 	return popReply(values, len(args) == 2)
 }
 
@@ -141,10 +153,11 @@ func handleLlen(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeList) == store.StatusWrongType {
 		return wrongTypeError()
 	}
-	connContext.OnKeyRead(key)
+
 	return intReply(int64(connContext.Store.List.Length(key)))
 }
 
@@ -154,23 +167,29 @@ func handleLrange(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeList) == store.StatusWrongType {
 		return wrongTypeError()
 	}
+
 	start, err := strconv.Atoi(args[1])
-	if err != nil {
-		return notIntegerError()
-	}
-	stop, err := strconv.Atoi(args[2])
+
 	if err != nil {
 		return notIntegerError()
 	}
 
-	connContext.OnKeyRead(key)
+	stop, err := strconv.Atoi(args[2])
+
+	if err != nil {
+		return notIntegerError()
+	}
+
 	values, exists := connContext.Store.List.Range(key, start, stop)
+
 	if !exists {
 		return emptyArrayReply()
 	}
+
 	return valuesToArray(values)
 }
 
@@ -178,16 +197,20 @@ func popReply(values []string, countProvided bool) Result {
 	if countProvided {
 		return valuesToArray(values)
 	}
+
 	if len(values) == 0 {
 		return nullStringReply()
 	}
+
 	return stringReply(values[0])
 }
 
 func valuesToArray(values []string) Result {
 	items := make([]Result, len(values))
+
 	for i, v := range values {
 		items[i] = stringReply(v)
 	}
+
 	return arrayReply(items)
 }

@@ -22,18 +22,21 @@ func handleHset(connContext *ConnContext, args []string) Result {
 
 	key := args[0]
 	fieldValues := extractStrings(args[1:])
+
 	if connContext.Store.CheckType(key, store.KeyTypeHash) == store.StatusWrongType {
 		return wrongTypeError()
 	}
+
 	count := connContext.Store.Hash.CountMissing(key, fieldValues...)
+
 	if !connContext.Store.Hash.WouldChange(key, fieldValues...) {
 		return intReply(int64(count))
 	}
+
 	record := newMutation(append([]string{"HSET", key}, fieldValues...)...)
+
 	if err := connContext.Commit(record, func() {
-		connContext.Store.PrepareWrite(key, store.KeyTypeHash, false)
 		connContext.Store.Hash.Set(key, fieldValues...)
-		connContext.OnKeyWrite(key)
 	}); err != nil {
 		return persistenceError()
 	}
@@ -47,14 +50,17 @@ func handleHget(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeHash) == store.StatusWrongType {
 		return wrongTypeError()
 	}
-	connContext.OnKeyRead(key)
+
 	value, exists := connContext.Store.Hash.Get(key, args[1])
+
 	if !exists {
 		return nullStringReply()
 	}
+
 	return stringReply(value)
 }
 
@@ -64,21 +70,22 @@ func handleHdel(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeHash) == store.StatusWrongType {
 		return wrongTypeError()
 	}
+
 	fields := extractStrings(args[1:])
 	count := connContext.Store.Hash.CountExisting(key, fields...)
+
 	if count == 0 {
 		return intReply(0)
 	}
+
 	record := newMutation(append([]string{"HDEL", key}, fields...)...)
+
 	if err := connContext.Commit(record, func() {
 		connContext.Store.Hash.Delete(key, fields...)
-		connContext.OnKeyMutate(key)
-		if connContext.Store.Hash.FieldCount(key) == 0 {
-			connContext.Store.RemoveEmptyKey(key, store.KeyTypeHash)
-		}
 	}); err != nil {
 		return persistenceError()
 	}
@@ -92,25 +99,31 @@ func handleHgetall(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeHash) == store.StatusWrongType {
 		return wrongTypeError()
 	}
-	connContext.OnKeyRead(key)
+
 	fields, exists := connContext.Store.Hash.GetAll(key)
+
 	if !exists {
 		return emptyArrayReply()
 	}
 
 	names := make([]string, 0, len(fields))
+
 	for field := range fields {
 		names = append(names, field)
 	}
+
 	sort.Strings(names)
 	items := make([]Result, 0, len(fields)*2)
+
 	for _, field := range names {
 		items = append(items, stringReply(field))
 		items = append(items, stringReply(fields[field]))
 	}
+
 	return arrayReply(items)
 }
 
@@ -120,13 +133,15 @@ func handleHexists(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeHash) == store.StatusWrongType {
 		return wrongTypeError()
 	}
-	connContext.OnKeyRead(key)
+
 	if connContext.Store.Hash.Exists(key, args[1]) {
 		return intReply(1)
 	}
+
 	return intReply(0)
 }
 
@@ -136,9 +151,10 @@ func handleHlen(connContext *ConnContext, args []string) Result {
 	}
 
 	key := args[0]
+
 	if connContext.Store.CheckType(key, store.KeyTypeHash) == store.StatusWrongType {
 		return wrongTypeError()
 	}
-	connContext.OnKeyRead(key)
+
 	return intReply(int64(connContext.Store.Hash.FieldCount(key)))
 }

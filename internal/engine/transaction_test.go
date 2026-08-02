@@ -33,8 +33,17 @@ func TestExpirationInvalidatesWatch(t *testing.T) {
 	exec(reader, "GET", "key")
 	exec(watcher, "MULTI")
 	result := exec(watcher, "EXEC")
-	if result.Type != ResultArray || result.Array != nil || !result.IsNull {
-		t.Fatalf("EXEC result = %#v, want null array", result)
+
+	if result.Type != ResultArray {
+		t.Fatalf("EXEC type = %v, want array", result.Type)
+	}
+
+	if result.Array != nil {
+		t.Fatalf("EXEC array = %#v, want nil", result.Array)
+	}
+
+	if !result.IsNull {
+		t.Fatalf("EXEC result = %#v, want null", result)
 	}
 }
 
@@ -51,7 +60,11 @@ func newTestConn(base *Context) *ConnContext {
 }
 
 func exec(connContext *ConnContext, name string, args ...string) Result {
-	return Execute(connContext, name, args)
+	if connContext.running.Load() {
+		return Execute(connContext, name, args)
+	}
+
+	return BootstrapExecute(connContext, name, args)
 }
 
 func TestMultiExecBasic(t *testing.T) {
@@ -65,11 +78,13 @@ func TestMultiExecBasic(t *testing.T) {
 	if result.Type != ResultArray {
 		t.Fatalf("EXEC expected array, got type %v", result.Type)
 	}
+
 	if len(result.Array) != 2 {
 		t.Fatalf("EXEC expected 2 results, got %d", len(result.Array))
 	}
 
 	val, _ := connContext.Store.Dictionary.Get("foo")
+
 	if val != "bar" {
 		t.Errorf("expected foo=bar, got %q", val)
 	}
@@ -78,13 +93,29 @@ func TestMultiExecBasic(t *testing.T) {
 func TestInvalidCommandIsRejectedBeforeQueue(t *testing.T) {
 	connection := newTestContext()
 	exec(connection, "MULTI")
+
 	result := exec(connection, "SET", "only-key")
-	if result.Type != ResultError || len(connection.Transaction.Queue) != 0 || !connection.Transaction.Dirty {
-		t.Fatalf("invalid queued command result = %#v, queue = %v, dirty = %v", result, connection.Transaction.Queue, connection.Transaction.Dirty)
+
+	if result.Type != ResultError {
+		t.Fatalf("result = %#v, want an error", result)
 	}
+
+	if len(connection.Transaction.Queue) != 0 {
+		t.Fatalf("queue = %v, want empty queue", connection.Transaction.Queue)
+	}
+
+	if !connection.Transaction.Dirty {
+		t.Fatal("transaction should be dirty")
+	}
+
 	result = exec(connection, "EXEC")
-	if result.Type != ResultError || !strings.HasPrefix(result.String, "EXECABORT") {
-		t.Fatalf("EXEC result = %#v, want EXECABORT", result)
+
+	if result.Type != ResultError {
+		t.Fatalf("EXEC result = %#v, want an error", result)
+	}
+
+	if !strings.HasPrefix(result.String, "EXECABORT") {
+		t.Fatalf("EXEC error = %q, want EXECABORT", result.String)
 	}
 }
 
@@ -95,11 +126,14 @@ func TestExecCommitsOneWALBatch(t *testing.T) {
 	exec(conn, "SET", "first", "1")
 	exec(conn, "SET", "second", "2")
 	result := exec(conn, "EXEC")
+
 	if result.Type != ResultArray || len(result.Array) != 2 {
 		t.Fatalf("EXEC returned %#v", result)
 	}
+
 	appender.mutex.Lock()
 	defer appender.mutex.Unlock()
+
 	if appender.batches != 1 || len(appender.values) != 2 {
 		t.Fatalf("WAL batches = %d, values = %d, want 1 batch with 2 values", appender.batches, len(appender.values))
 	}
@@ -112,12 +146,15 @@ func TestExecWALFailureDoesNotChangeLiveStore(t *testing.T) {
 	exec(conn, "MULTI")
 	exec(conn, "SET", "existing", "after")
 	exec(conn, "SET", "new", "value")
+
 	if result := exec(conn, "EXEC"); result.Type != ResultError {
 		t.Fatalf("EXEC returned %#v, want persistence error", result)
 	}
+
 	if value, exists := database.Dictionary.Get("existing"); !exists || value != "before" {
 		t.Fatalf("existing value = %q, exists=%v, want before", value, exists)
 	}
+
 	if _, exists := database.Dictionary.Get("new"); exists {
 		t.Fatal("failed EXEC created new key")
 	}
@@ -139,21 +176,29 @@ func TestMultiQueuesAllTypes(t *testing.T) {
 	}
 
 	v, _ := connContext.Store.Dictionary.Get("str")
+
 	if v != "hello" {
 		t.Error("SET inside MULTI did not execute")
 	}
+
 	members, _ := connContext.Store.Set.Members("myset")
+
 	if len(members) != 2 {
 		t.Error("SADD inside MULTI did not execute")
 	}
+
 	if connContext.Store.List.Length("mylist") != 1 {
 		t.Error("LPUSH inside MULTI did not execute")
 	}
+
 	hv, _ := connContext.Store.Hash.Get("myhash", "field")
+
 	if hv != "value" {
 		t.Error("HSET inside MULTI did not execute")
 	}
+
 	_, ok := connContext.Store.SortedSet.Score("myzset", "member")
+
 	if !ok {
 		t.Error("ZADD inside MULTI did not execute")
 	}
@@ -167,7 +212,9 @@ func TestNestedMultiReturnsError(t *testing.T) {
 	if result.Type != ResultError {
 		t.Errorf("nested MULTI expected error, got %v", result.Type)
 	}
+
 	exec(connContext, "EXEC")
+
 	if connContext.Transaction.Status != TransactionIdle {
 		t.Error("expected Transaction to be idle after EXEC")
 	}
@@ -176,6 +223,7 @@ func TestNestedMultiReturnsError(t *testing.T) {
 func TestExecWithoutMultiReturnsError(t *testing.T) {
 	connContext := newTestContext()
 	result := exec(connContext, "EXEC")
+
 	if result.Type != ResultError {
 		t.Errorf("EXEC without MULTI expected error, got %v", result.Type)
 	}
@@ -205,12 +253,15 @@ func TestExecErrorInOneSlotDoesNotAbort(t *testing.T) {
 	if len(result.Array) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(result.Array))
 	}
+
 	if result.Array[0].Type != ResultSimpleString {
 		t.Errorf("slot 0 (SET) should succeed, got type %v", result.Array[0].Type)
 	}
+
 	if result.Array[1].Type != ResultError {
 		t.Errorf("slot 1 (ZADD bad float) should be error, got type %v", result.Array[1].Type)
 	}
+
 	if result.Array[2].String != "hello" {
 		t.Errorf("slot 2 (GET) expected 'hello', got %q", result.Array[2].String)
 	}
@@ -226,10 +277,13 @@ func TestDiscardClearsQueue(t *testing.T) {
 	if connContext.Transaction.Status != TransactionIdle {
 		t.Error("expected TransactionIdle after DISCARD")
 	}
+
 	if len(connContext.Transaction.Queue) != 0 {
 		t.Error("expected empty queue after DISCARD")
 	}
+
 	_, ok := connContext.Store.Dictionary.Get("foo")
+
 	if ok {
 		t.Error("SET should not have executed after DISCARD")
 	}
@@ -238,6 +292,7 @@ func TestDiscardClearsQueue(t *testing.T) {
 func TestDiscardWithoutMultiReturnsError(t *testing.T) {
 	connContext := newTestContext()
 	result := exec(connContext, "DISCARD")
+
 	if result.Type != ResultError {
 		t.Errorf("DISCARD without MULTI expected error, got %v", result.Type)
 	}
@@ -255,7 +310,9 @@ func TestWatchNoConflictExecSucceeds(t *testing.T) {
 	if result.Type != ResultArray || result.Array == nil {
 		t.Fatal("EXEC should succeed when watched key was not modified")
 	}
+
 	val, _ := connContext.Store.Dictionary.Get("counter")
+
 	if val != "1" {
 		t.Errorf("expected counter=1, got %q", val)
 	}
@@ -278,7 +335,9 @@ func TestWatchConflictAborts(t *testing.T) {
 	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should return nil array when watched key was modified")
 	}
+
 	val, _ := connContext.Store.Dictionary.Get("counter")
+
 	if val != "999" {
 		t.Errorf("expected counter=999 (from other conn), got %q", val)
 	}
@@ -297,6 +356,7 @@ func TestWatchSetConflictAborts(t *testing.T) {
 	exec(other, "SREM", "myset", "a")
 
 	result := exec(connContext, "EXEC")
+
 	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched set key was modified via SREM")
 	}
@@ -315,6 +375,7 @@ func TestWatchListConflictAborts(t *testing.T) {
 	exec(other, "LPOP", "mylist")
 
 	result := exec(connContext, "EXEC")
+
 	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched list key was modified via LPOP")
 	}
@@ -333,6 +394,7 @@ func TestWatchHashConflictAborts(t *testing.T) {
 	exec(other, "HDEL", "myhash", "field")
 
 	result := exec(connContext, "EXEC")
+
 	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched hash key was modified via HDEL")
 	}
@@ -351,6 +413,7 @@ func TestWatchZsetConflictAborts(t *testing.T) {
 	exec(other, "ZREM", "myzset", "a")
 
 	result := exec(connContext, "EXEC")
+
 	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched zset key was modified via ZREM")
 	}
@@ -369,6 +432,7 @@ func TestWatchDeleteConflictAborts(t *testing.T) {
 	exec(other, "DEL", "foo")
 
 	result := exec(connContext, "EXEC")
+
 	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched key was deleted by another conn")
 	}
@@ -378,9 +442,11 @@ func TestWatchInsideMultiReturnsError(t *testing.T) {
 	connContext := newTestContext()
 	exec(connContext, "MULTI")
 	result := exec(connContext, "WATCH", "foo")
+
 	if result.Type != ResultError {
 		t.Errorf("WATCH inside MULTI should return error, got type %v %q", result.Type, result.String)
 	}
+
 	exec(connContext, "DISCARD")
 }
 
@@ -424,10 +490,22 @@ func TestWatchRegistriesAreIsolatedByEngine(t *testing.T) {
 	second := newTestContext()
 
 	exec(first, "WATCH", "shared")
-	second.OnKeyMutate("shared")
+	second.Store.Keyspace.BumpVersion("shared")
 
 	if first.watches.isDirty(first.ID) {
 		t.Fatal("a mutation in another engine dirtied this engine's transaction")
+	}
+}
+
+func TestStoreMutationInvalidatesWatch(t *testing.T) {
+	connection := newTestContext()
+	exec(connection, "SADD", "set", "first")
+	exec(connection, "WATCH", "set")
+
+	connection.Store.Set.Add("set", "second")
+
+	if !connection.watches.isDirty(connection.ID) {
+		t.Fatal("store mutation did not invalidate WATCH")
 	}
 }
 
@@ -438,18 +516,20 @@ func TestTxStateReset(t *testing.T) {
 	connContext.Transaction.Enqueue("SET", []string{"k", "v"})
 	connContext.Transaction.Dirty = true
 	connContext.Transaction.Watches = map[string]uint64{"foo": 5}
-
 	connContext.Transaction.Reset()
 
 	if connContext.Transaction.Status != TransactionIdle {
 		t.Error("Status should be TransactionIdle after Reset")
 	}
+
 	if len(connContext.Transaction.Queue) != 0 {
 		t.Error("Queue should be empty after Reset")
 	}
+
 	if connContext.Transaction.Dirty {
 		t.Error("Dirty should be false after Reset")
 	}
+
 	if connContext.Transaction.Watches != nil {
 		t.Error("Watches should be nil after Reset")
 	}
@@ -464,13 +544,15 @@ func TestConcurrentWritesAndWatch(t *testing.T) {
 
 	go func() {
 		connContext := NewConnContext(ctx, nil)
-		for i := 0; i < 1000; i++ {
+
+		for range 1000 {
 			exec(connContext, "SET", "shared", "value")
 		}
+
 		close(done)
 	}()
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		connContext := NewConnContext(ctx, nil)
 		exec(connContext, "WATCH", "shared")
 		exec(connContext, "MULTI")
@@ -499,6 +581,7 @@ func TestExecDoesNotAllowOtherCommandsToInterleave(t *testing.T) {
 		if transactionCalls.Add(1) == 1 {
 			close(transactionEntered)
 		}
+
 		<-releaseTransaction
 		return okReply()
 	})
@@ -534,11 +617,13 @@ func TestExecDoesNotAllowOtherCommandsToInterleave(t *testing.T) {
 	}
 
 	close(releaseTransaction)
+
 	select {
 	case <-execDone:
 	case <-time.After(time.Second):
 		t.Fatal("EXEC did not finish")
 	}
+
 	select {
 	case <-otherDone:
 	case <-time.After(time.Second):

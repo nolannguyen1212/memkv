@@ -17,11 +17,11 @@ func NewDeque[T any]() *Deque[T] {
 
 func (d *Deque[T]) IsEmpty() bool { return d.length == 0 }
 func (d *Deque[T]) Length() int   { return d.length }
-
 func (d *Deque[T]) PushFront(elem T) {
 	if d.length == d.capacity {
 		d.grow()
 	}
+
 	d.head = (d.head - 1 + d.capacity) % d.capacity
 	d.elements[d.head] = elem
 	d.length++
@@ -31,6 +31,7 @@ func (d *Deque[T]) PushBack(elem T) {
 	if d.length == d.capacity {
 		d.grow()
 	}
+
 	d.elements[d.tail] = elem
 	d.tail = (d.tail + 1) % d.capacity
 	d.length++
@@ -38,9 +39,11 @@ func (d *Deque[T]) PushBack(elem T) {
 
 func (d *Deque[T]) PopFront() (T, bool) {
 	var zero T
+
 	if d.IsEmpty() {
 		return zero, false
 	}
+
 	elem := d.elements[d.head]
 	d.elements[d.head] = zero
 	d.head = (d.head + 1) % d.capacity
@@ -50,9 +53,11 @@ func (d *Deque[T]) PopFront() (T, bool) {
 
 func (d *Deque[T]) PopBack() (T, bool) {
 	var zero T
+
 	if d.IsEmpty() {
 		return zero, false
 	}
+
 	d.tail = (d.tail - 1 + d.capacity) % d.capacity
 	elem := d.elements[d.tail]
 	d.elements[d.tail] = zero
@@ -62,9 +67,11 @@ func (d *Deque[T]) PopBack() (T, bool) {
 
 func (d *Deque[T]) At(index int) (T, bool) {
 	var zero T
+
 	if index < 0 || index >= d.length {
 		return zero, false
 	}
+
 	return d.at(index), true
 }
 
@@ -75,9 +82,11 @@ func (d *Deque[T]) at(index int) T {
 func (d *Deque[T]) grow() {
 	newCap := d.capacity * 2
 	newElems := make([]T, newCap)
-	for i := 0; i < d.length; i++ {
+
+	for i := range d.length {
 		newElems[i] = d.at(i)
 	}
+
 	d.elements = newElems
 	d.capacity = newCap
 	d.head = 0

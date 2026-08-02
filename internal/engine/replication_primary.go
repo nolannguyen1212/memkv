@@ -17,6 +17,7 @@ func handleReplconf(connContext *ConnContext, args []string) Result {
 	if len(args) < 2 {
 		return Result{Type: ResultError, String: "ERR wrong number of arguments for 'replconf' command"}
 	}
+
 	switch strings.ToUpper(args[0]) {
 	case "LISTENING-ADDR":
 		connContext.ReplicaAddress = args[1]
@@ -34,19 +35,33 @@ func (connContext *ConnContext) SynchronizeReplica(args []string) Result {
 	if connContext.Replication == nil {
 		return Result{Type: ResultError, String: "ERR replication not configured"}
 	}
+
 	if len(args) != 2 {
 		return wrongArgCountError("psync")
 	}
+
 	offset, err := strconv.ParseInt(args[1], 10, 64)
+
 	if err != nil {
 		return notIntegerError()
 	}
-	getSnapshot := func() (store.LogicalSnapshot, error) {
-		return connContext.Snapshot()
+
+	captureSnapshot := func() (store.LogicalSnapshot, int64, error) {
+		return connContext.captureReplicationSnapshot()
 	}
-	if err := connContext.Replication.HandlePSYNC(connContext.Connection, connContext.ReplicaAddress, args[0], offset, getSnapshot); err != nil {
+
+	err = connContext.Replication.HandlePSYNC(
+		connContext.Connection,
+		connContext.ReplicaAddress,
+		args[0],
+		offset,
+		captureSnapshot,
+	)
+
+	if err != nil {
 		return Result{Type: ResultError, String: "ERR " + err.Error()}
 	}
+
 	return Result{}
 }
 
@@ -54,18 +69,24 @@ func handleReplication(connContext *ConnContext, args []string) Result {
 	if len(args) == 0 {
 		return Result{Type: ResultError, String: "ERR wrong number of arguments for 'replication' command"}
 	}
+
 	subcommand := strings.ToUpper(args[0])
+
 	switch subcommand {
 	case "REPLICAS":
 		if connContext.Replication == nil {
 			return Result{Type: ResultArray, Array: []Result{}}
 		}
+
 		addresses := connContext.Replication.ActiveReplicas()
 		result := make([]Result, len(addresses))
+
 		for i, addr := range addresses {
 			result[i] = Result{Type: ResultBulkString, String: addr}
 		}
+
 		return Result{Type: ResultArray, Array: result}
 	}
+
 	return Result{Type: ResultError, String: "ERR unknown subcommand '" + args[0] + "'"}
 }

@@ -20,9 +20,11 @@ func NewBacklog(capacity int) *Backlog {
 func (backlog *Backlog) Write(data []byte) {
 	backlog.mutex.Lock()
 	defer backlog.mutex.Unlock()
+
 	for _, b := range data {
 		backlog.buffer[backlog.tail%int64(backlog.capacity)] = b
 		backlog.tail++
+
 		if backlog.tail-backlog.head > int64(backlog.capacity) {
 			backlog.head = backlog.tail - int64(backlog.capacity)
 		}
@@ -44,12 +46,16 @@ func (backlog *Backlog) CanServe(offset int64) bool {
 func (backlog *Backlog) ReadFrom(offset int64) []byte {
 	backlog.mutex.RLock()
 	defer backlog.mutex.RUnlock()
+
 	if offset < backlog.head || offset > backlog.tail {
 		return nil
 	}
+
 	result := make([]byte, int(backlog.tail-offset))
+
 	for i := range result {
 		result[i] = backlog.buffer[(offset+int64(i))%int64(backlog.capacity)]
 	}
+
 	return result
 }

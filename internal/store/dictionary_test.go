@@ -8,12 +8,15 @@ func TestDictionarySetGetAndDelete(t *testing.T) {
 	dictionary.Set("key", "value")
 
 	value, exists := dictionary.Get("key")
+
 	if !exists || value != "value" {
 		t.Fatalf("Get() = %q, %v", value, exists)
 	}
+
 	if deleted := database.DeleteKey("key"); !deleted {
 		t.Fatal("DeleteKey() = false, want true")
 	}
+
 	if _, exists := dictionary.Get("key"); exists {
 		t.Fatal("deleted key still exists")
 	}
