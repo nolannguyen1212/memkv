@@ -15,6 +15,24 @@ import (
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
+func closeManagerAfterTest(t *testing.T, manager *Manager) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close replication manager: %v", err)
+		}
+	})
+}
+
+func closeConnectionAfterTest(t *testing.T, connection net.Conn) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := connection.Close(); err != nil {
+			t.Errorf("close connection: %v", err)
+		}
+	})
+}
+
 func TestReceiveSnapshotRestoresLogicalState(t *testing.T) {
 	state := store.LogicalSnapshot{
 		Keyspace: map[string]store.KeyMetadata{"key": {Type: store.KeyTypeString}},
@@ -68,12 +86,12 @@ func TestParseFullResync(t *testing.T) {
 
 func TestPartialSyncHasNoGapBeforeReplicaRegistration(t *testing.T) {
 	manager := NewManager(ManagerConfig{BacklogCapacity: 1024})
-	defer func() { _ = manager.Close() }()
+	closeManagerAfterTest(t, manager)
 	initial := []byte("initial")
 	manager.Propagate(initial)
 
 	serverConnection, replicaConnection := net.Pipe()
-	defer func() { _ = replicaConnection.Close() }()
+	closeConnectionAfterTest(t, replicaConnection)
 	done := make(chan struct{})
 	go func() {
 		_ = manager.HandlePSYNC(serverConnection, "replica", manager.primaryStreamID, 0, func() store.LogicalSnapshot { return store.LogicalSnapshot{} })
@@ -130,7 +148,7 @@ func TestStreamAppliesCommittedBatchAsOneUnit(t *testing.T) {
 	payload := resp.Encode(resp.Value{Type: resp.TypeArray, Array: commands})
 	session := &replicaSession{reader: bufio.NewReader(bytes.NewBufferString(payload))}
 	manager := NewManager(ManagerConfig{BacklogCapacity: 1024})
-	defer func() { _ = manager.Close() }()
+	closeManagerAfterTest(t, manager)
 	standaloneCalled := false
 	var batch []Command
 	err := manager.streamCommands(session, func(string, []resp.Value) error {
@@ -156,9 +174,9 @@ func TestStreamAppliesCommittedBatchAsOneUnit(t *testing.T) {
 
 func TestSlowReplicaQueueOverflowDisconnectsReplica(t *testing.T) {
 	manager := NewManager(ManagerConfig{BacklogCapacity: 1024})
-	defer func() { _ = manager.Close() }()
+	closeManagerAfterTest(t, manager)
 	primaryConnection, replicaConnection := net.Pipe()
-	defer func() { _ = replicaConnection.Close() }()
+	closeConnectionAfterTest(t, replicaConnection)
 	replica := newReplicaConnection("slow", primaryConnection)
 	manager.addReplica(replica)
 	for range defaultReplicaQueueCapacity {
@@ -175,8 +193,8 @@ func TestSlowReplicaQueueOverflowDisconnectsReplica(t *testing.T) {
 func TestReplicationIDChangesForNewPrimaryHistory(t *testing.T) {
 	first := NewManager(ManagerConfig{BacklogCapacity: 1, ListeningAddress: "127.0.0.1:6379"})
 	second := NewManager(ManagerConfig{BacklogCapacity: 1, ListeningAddress: "127.0.0.1:6379"})
-	defer func() { _ = first.Close() }()
-	defer func() { _ = second.Close() }()
+	closeManagerAfterTest(t, first)
+	closeManagerAfterTest(t, second)
 	if first.primaryStreamID == second.primaryStreamID {
 		t.Fatalf("replication IDs match: %q", first.primaryStreamID)
 	}
@@ -184,13 +202,13 @@ func TestReplicationIDChangesForNewPrimaryHistory(t *testing.T) {
 
 func TestFullSyncAndLiveStreamConverge(t *testing.T) {
 	primary := NewManager(ManagerConfig{BacklogCapacity: 1024, ListeningAddress: ":6379"})
-	defer func() { _ = primary.Close() }()
+	closeManagerAfterTest(t, primary)
 	source := store.New(store.Config{})
 	source.SetString("initial", "one", time.Time{})
 	target := store.New(store.Config{})
 
 	serverConnection, replicaConnection := net.Pipe()
-	defer func() { _ = replicaConnection.Close() }()
+	closeConnectionAfterTest(t, replicaConnection)
 	syncDone := make(chan error, 1)
 	go func() {
 		syncDone <- primary.fullSync(newReplicaConnection("replica", serverConnection), source.Snapshot)
@@ -217,7 +235,7 @@ func TestFullSyncAndLiveStreamConverge(t *testing.T) {
 	applied := make(chan error, 1)
 	mutationApplied := make(chan struct{})
 	replica := NewManager(ManagerConfig{BacklogCapacity: 1})
-	defer func() { _ = replica.Close() }()
+	closeManagerAfterTest(t, replica)
 	go func() {
 		session := &replicaSession{reader: reader}
 		applied <- replica.streamCommands(session, func(name string, args []resp.Value) error {
