@@ -11,7 +11,7 @@ A Redis-inspired learning database built from scratch in Go.
   - Lists (Deque semantics)
   - Hashes (Field-value maps)
   - Sorted Sets (Score map with deterministic sorted slice ordering)
-- **Memory Eviction**: Optional LRU eviction
+- **Capacity Control**: Optional deterministic FIFO eviction by maximum key count
 - **Persistence**: WAL and versioned, checksummed snapshots
 - **Commit Model**: Canonical mutation batches shared by runtime commits, WAL, and replication
 - **TTL Support**: Automatic key expiration
@@ -175,8 +175,7 @@ datastructure:
     check_interval: 1
 
 memory:
-  key_limit: 5000000     # unlimited if not set
-  evict_strategy: "lru"  # empty or lru
+  max_keys: 5000000  # unlimited if not set
 
 ```
 
@@ -184,13 +183,11 @@ When WAL and disk snapshots are enabled together, recovery restores the snapshot
 
 For an authenticated primary, the replica's `replication.password` must match the primary's `server.auth`. `replication.username` may be empty or `default`; custom ACL users are not implemented yet.
 
-### Memory Eviction
+### Capacity Control
 
-When `key_limit` is exceeded and `evict_strategy` is `lru`, the least recently used key is evicted.
+When a new key would exceed `max_keys`, the oldest inserted key is included as a `DEL` in the same committed mutation batch. Reads and updates do not change FIFO order.
 
-| Strategy | Behavior                          |
-| -------- | --------------------------------- |
-| `lru`    | Evict least recently accessed key |
+Replica processes intentionally disable local WAL and disk snapshots. They rebuild memory through full synchronization after restart and then continue with partial synchronization while their replication position remains available in memory.
 
 ## Docker
 
