@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
 func registerReplicationCommands(registry *Registry) {
@@ -13,47 +14,47 @@ func registerReplicationCommands(registry *Registry) {
 	registry.Register("REPLICATION", handleReplication)
 }
 
-func handleReplconf(connContext *ConnContext, args []resp.Value) resp.Value {
+func handleReplconf(connContext *ConnContext, args []string) resp.Value {
 	if len(args) < 2 {
 		return resp.Value{Type: resp.TypeError, String: "ERR wrong number of arguments for 'replconf' command"}
 	}
-	switch strings.ToUpper(args[0].String) {
+	switch strings.ToUpper(args[0]) {
 	case "LISTENING-ADDR":
-		connContext.ReplicaAddress = args[1].String
+		connContext.ReplicaAddress = args[1]
 		return resp.Value{Type: resp.TypeSimpleString, String: "OK"}
 	default:
 		return resp.Value{Type: resp.TypeError, String: "ERR unsupported REPLCONF option"}
 	}
 }
 
-func handlePsync(connContext *ConnContext, args []resp.Value) resp.Value {
+func handlePsync(connContext *ConnContext, args []string) resp.Value {
 	if connContext.Replication == nil {
 		return resp.Value{Type: resp.TypeError, String: "ERR replication not configured"}
 	}
 	replicaID := "?"
 	var offset int64 = -1
 	if len(args) >= 2 {
-		replicaID = args[0].String
-		if off, err := strconv.ParseInt(args[1].String, 10, 64); err == nil {
+		replicaID = args[0]
+		if off, err := strconv.ParseInt(args[1], 10, 64); err == nil {
 			offset = off
 		}
 	}
 
-	getRDB := func() []byte {
-		return connContext.GenerateRDB()
+	getSnapshot := func() store.LogicalSnapshot {
+		return connContext.ReplicationSnapshot()
 	}
 
-	if err := connContext.Replication.HandlePSYNC(connContext.Connection, connContext.ReplicaAddress, replicaID, offset, getRDB); err != nil {
+	if err := connContext.Replication.HandlePSYNC(connContext.Connection, connContext.ReplicaAddress, replicaID, offset, getSnapshot); err != nil {
 		return resp.Value{Type: resp.TypeError, String: "ERR " + err.Error()}
 	}
 	return resp.Value{}
 }
 
-func handleReplication(connContext *ConnContext, args []resp.Value) resp.Value {
+func handleReplication(connContext *ConnContext, args []string) resp.Value {
 	if len(args) == 0 {
 		return resp.Value{Type: resp.TypeError, String: "ERR wrong number of arguments for 'replication' command"}
 	}
-	subcommand := strings.ToUpper(args[0].String)
+	subcommand := strings.ToUpper(args[0])
 	switch subcommand {
 	case "REPLICAS":
 		if connContext.Replication == nil {
@@ -66,5 +67,5 @@ func handleReplication(connContext *ConnContext, args []resp.Value) resp.Value {
 		}
 		return resp.Value{Type: resp.TypeArray, Array: result}
 	}
-	return resp.Value{Type: resp.TypeError, String: "ERR unknown subcommand '" + args[0].String + "'"}
+	return resp.Value{Type: resp.TypeError, String: "ERR unknown subcommand '" + args[0] + "'"}
 }

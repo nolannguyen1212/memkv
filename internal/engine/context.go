@@ -1,29 +1,48 @@
 package engine
 
 import (
-	"bytes"
+	"fmt"
 	"log"
 	"net"
-	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
-type Handler func(connContext *ConnContext, args []resp.Value) resp.Value
+type Handler func(connContext *ConnContext, args []string) resp.Value
 
 type WALAppender interface {
 	Append(value resp.Value) error
 }
 
+type WALBatchAppender interface {
+	AppendBatch(values []resp.Value) error
+}
+
+type WALRewriter interface {
+	RewriteAll(state store.LogicalSnapshot, path string) error
+}
+
+type WALOffsetter interface {
+	Offset() (int64, error)
+}
+
 type Replicator interface {
 	ActiveReplicas() []string
-	HandlePSYNC(connection net.Conn, replicaAddress, replicaID string, offset int64, getSnapshot func() []byte) error
+	HandlePSYNC(connection net.Conn, replicaAddress, replicaID string, offset int64, getSnapshot func() store.LogicalSnapshot) error
 	Info() string
 	IsReplica() bool
 	Propagate(data []byte)
+	PropagateBatch(data []byte)
+}
+
+type SystemConfig struct {
+	Auth            string
+	WALEnabled      bool
+	SnapshotEnabled bool
 }
 
 type Context struct {
@@ -31,16 +50,55 @@ type Context struct {
 	WAL               WALAppender
 	Replication       Replicator
 	Registry          *Registry
+	system            SystemConfig
+	watches           *watchRegistry
+	metrics           *metrics
+	connectionCounter atomic.Uint64
 	persistenceFailed atomic.Bool
+	events            chan event
+	done              chan struct{}
+	ready             chan struct{}
+	running           atomic.Bool
+	directMu          sync.Mutex
 }
 
-func NewContext(store *store.Store, log WALAppender, replicationManager Replicator) *Context {
-	return &Context{Store: store, WAL: log, Replication: replicationManager, Registry: NewRegistry()}
+func NewContext(database *store.Store, log WALAppender, replicationManager Replicator, system SystemConfig) *Context {
+	ctx := &Context{
+		Store:       database,
+		WAL:         log,
+		Replication: replicationManager,
+		Registry:    NewRegistry(),
+		system:      system,
+		watches:     newWatchRegistry(),
+		metrics:     newMetrics(),
+		events:      make(chan event, requestQueueCapacity),
+		done:        make(chan struct{}),
+		ready:       make(chan struct{}),
+	}
+	database.SetExpirationHandler(ctx.keyExpired)
+	return ctx
+}
+
+func (ctx *Context) keyExpired(key string) {
+	ctx.watches.notify(key)
+	ctx.propagate(buildBulkArray("DEL", key))
+}
+
+func (ctx *Context) ConnectionOpened() {
+	ctx.metrics.connectionOpened()
+}
+
+func (ctx *Context) ConnectionClosed() {
+	ctx.metrics.connectionClosed()
+}
+
+func (ctx *Context) CommandProcessed() {
+	ctx.metrics.totalCommands.Add(1)
 }
 
 func (ctx *Context) OnKeyMutate(key string) {
 	ctx.Store.Keyspace.BumpVersion(key)
-	globalWatch.Notify(key)
+	ctx.watches.notify(key)
 }
 
 func (ctx *Context) OnKeyWrite(key string) {
@@ -52,125 +110,101 @@ func (ctx *Context) OnKeyRead(key string) {
 	ctx.Store.Eviction.RecordAccess(key)
 }
 
-func (ctx *Context) OnKeyDelete(key string) {
-	ctx.OnKeyMutate(key)
-	ctx.Store.Eviction.RecordDelete(key)
-}
-
-func (ctx *Context) AppendWAL(value resp.Value) error {
-	if err := ctx.appendAndPropagate(value); err != nil {
+func (ctx *Context) Commit(value resp.Value, apply func()) error {
+	if err := ctx.appendWAL(value); err != nil {
 		ctx.persistenceFailed.Store(true)
 		return err
 	}
-	for ctx.Store.Eviction.ShouldEvict() {
-		key := ctx.Store.Eviction.EvictOne()
-		if key == "" {
-			break
-		}
-		globalWatch.Notify(key)
-		if err := ctx.appendAndPropagate(buildBulkArray("DEL", key)); err != nil {
-			ctx.persistenceFailed.Store(true)
-			return err
-		}
+	apply()
+	ctx.propagate(value)
+	return ctx.evictIfNeeded()
+}
+
+func (ctx *Context) CommitBatch(values []resp.Value, apply func()) error {
+	if len(values) == 0 {
+		apply()
+		return nil
+	}
+	if err := ctx.appendWALBatch(values); err != nil {
+		ctx.persistenceFailed.Store(true)
+		return err
+	}
+	apply()
+	if ctx.Replication != nil {
+		ctx.Replication.PropagateBatch([]byte(resp.Encode(resp.Value{Type: resp.TypeArray, Array: values})))
 	}
 	return nil
 }
 
-func (ctx *Context) appendAndPropagate(value resp.Value) error {
+func (ctx *Context) evictIfNeeded() error {
+	for ctx.Store.Eviction.ShouldEvict() {
+		key := ctx.Store.Eviction.NextEviction()
+		if key == "" {
+			break
+		}
+		ctx.watches.notify(key)
+		value := buildBulkArray("DEL", key)
+		if err := ctx.appendWAL(value); err != nil {
+			ctx.persistenceFailed.Store(true)
+			return err
+		}
+		ctx.Store.DeleteKey(key)
+		ctx.watches.notify(key)
+		ctx.propagate(value)
+	}
+	return nil
+}
+
+func (ctx *Context) appendWAL(value resp.Value) error {
 	if ctx.WAL != nil {
 		if err := ctx.WAL.Append(value); err != nil {
 			return err
 		}
 	}
-	if ctx.Replication != nil {
-		ctx.Replication.Propagate([]byte(resp.Encode(value)))
-	}
 	return nil
 }
 
-func (ctx *Context) GenerateRDB() []byte {
-	var buffer bytes.Buffer
-
-	for key, entry := range ctx.Store.Dictionary.Snapshot() {
-		if entry.IsExpired() {
-			continue
-		}
-		cmd := resp.Value{Type: resp.TypeArray, Array: []resp.Value{
-			{Type: resp.TypeBulkString, String: "SET"},
-			{Type: resp.TypeBulkString, String: key},
-			{Type: resp.TypeBulkString, String: entry.Value},
-		}}
-		buffer.WriteString(resp.Encode(cmd))
+func (ctx *Context) appendWALBatch(values []resp.Value) error {
+	if ctx.WAL == nil {
+		return nil
 	}
-
-	for key, entry := range ctx.Store.Set.Snapshot() {
-		if entry.IsExpired() {
-			continue
-		}
-		values := []resp.Value{
-			{Type: resp.TypeBulkString, String: "SADD"},
-			{Type: resp.TypeBulkString, String: key},
-		}
-		for member := range entry.Members {
-			values = append(values, resp.Value{Type: resp.TypeBulkString, String: member})
-		}
-		buffer.WriteString(resp.Encode(resp.Value{Type: resp.TypeArray, Array: values}))
+	if batchAppender, ok := ctx.WAL.(WALBatchAppender); ok {
+		return batchAppender.AppendBatch(values)
 	}
-
-	for key, items := range ctx.Store.List.Snapshot() {
-		if len(items) == 0 {
-			continue
-		}
-		values := []resp.Value{
-			{Type: resp.TypeBulkString, String: "RPUSH"},
-			{Type: resp.TypeBulkString, String: key},
-		}
-		for _, item := range items {
-			values = append(values, resp.Value{Type: resp.TypeBulkString, String: item})
-		}
-		buffer.WriteString(resp.Encode(resp.Value{Type: resp.TypeArray, Array: values}))
+	if len(values) == 1 {
+		return ctx.WAL.Append(values[0])
 	}
+	return fmt.Errorf("WAL does not support atomic batches")
+}
 
-	for key, fields := range ctx.Store.Hash.Snapshot() {
-		if len(fields) == 0 {
-			continue
-		}
-		values := []resp.Value{
-			{Type: resp.TypeBulkString, String: "HSET"},
-			{Type: resp.TypeBulkString, String: key},
-		}
-		for field, value := range fields {
-			values = append(values, resp.Value{Type: resp.TypeBulkString, String: field})
-			values = append(values, resp.Value{Type: resp.TypeBulkString, String: value})
-		}
-		buffer.WriteString(resp.Encode(resp.Value{Type: resp.TypeArray, Array: values}))
+func (ctx *Context) propagate(value resp.Value) {
+	if ctx.Replication != nil {
+		ctx.Replication.Propagate([]byte(resp.Encode(value)))
 	}
+}
 
-	for key, members := range ctx.Store.SortedSet.Snapshot() {
-		if len(members) == 0 {
-			continue
+func (ctx *Context) ReplicationSnapshot() store.LogicalSnapshot {
+	return ctx.Store.Snapshot()
+}
+
+func (ctx *Context) RestoreSnapshot(state store.LogicalSnapshot) error {
+	if ctx.running.Load() {
+		request := &restoreRequest{state: state, reply: make(chan error, 1)}
+		select {
+		case ctx.events <- event{restore: request}:
+		case <-ctx.done:
+			return ErrStopped
 		}
-		values := []resp.Value{
-			{Type: resp.TypeBulkString, String: "ZADD"},
-			{Type: resp.TypeBulkString, String: key},
+		select {
+		case err := <-request.reply:
+			return err
+		case <-ctx.done:
+			return ErrStopped
 		}
-		for member, score := range members {
-			values = append(values, resp.Value{Type: resp.TypeBulkString, String: strconv.FormatFloat(score, 'g', -1, 64)})
-			values = append(values, resp.Value{Type: resp.TypeBulkString, String: member})
-		}
-		buffer.WriteString(resp.Encode(resp.Value{Type: resp.TypeArray, Array: values}))
 	}
-
-	for key, metadata := range ctx.Store.Keyspace.Snapshot() {
-		if metadata.ExpiredAt.IsZero() {
-			continue
-		}
-		buffer.WriteString(resp.Encode(buildBulkArray(
-			"PEXPIREAT", key, strconv.FormatInt(metadata.ExpiredAt.UnixMilli(), 10),
-		)))
-	}
-
-	return buffer.Bytes()
+	ctx.directMu.Lock()
+	defer ctx.directMu.Unlock()
+	return ctx.Store.Restore(state, ctx.Store.Now())
 }
 
 type Registry struct {
@@ -186,7 +220,6 @@ func NewRegistry() *Registry {
 	registerSortedSetCommands(registry)
 	registerTransactionCommands(registry)
 	registerSystemCommands(registry)
-	registerPubSubCommands(registry)
 	registerReplicationCommands(registry)
 	return registry
 }
@@ -220,11 +253,9 @@ var writeCommands = map[string]bool{
 	"APPEND": true, "SETRANGE": true,
 	"EXPIRE": true, "PEXPIRE": true, "EXPIREAT": true, "PEXPIREAT": true, "PERSIST": true,
 	"SADD": true, "SREM": true, "SMOVE": true, "SPOP": true,
-	"SEXPIRE":    true,
 	"SDIFFSTORE": true, "SINTERSTORE": true, "SUNIONSTORE": true,
 	"LPUSH": true, "RPUSH": true, "LPUSHX": true, "RPUSHX": true,
 	"LPOP": true, "RPOP": true, "LSET": true, "LINSERT": true, "LREM": true, "LTRIM": true,
-	"SORT": true,
 	"HSET": true, "HMSET": true, "HDEL": true, "HSETNX": true,
 	"HINCRBY": true, "HINCRBYFLOAT": true,
 	"ZADD": true, "ZREM": true, "ZINCRBY": true, "ZPOPMIN": true, "ZPOPMAX": true,
@@ -232,8 +263,30 @@ var writeCommands = map[string]bool{
 }
 
 func Execute(connContext *ConnContext, name string, args []resp.Value) resp.Value {
+	return execute(connContext, NewCommand(name, args))
+}
+
+func execute(connContext *ConnContext, command Command) resp.Value {
+	if connContext.running.Load() {
+		result, err := connContext.SubmitCommand(connContext, command)
+		if err != nil {
+			return errorReply("ERR engine stopped")
+		}
+		return result
+	}
+	connContext.directMu.Lock()
+	defer connContext.directMu.Unlock()
+	connContext.Store.Maintain(connContext.Store.Now())
+	return executeOwned(connContext, command.Name, command.Args)
+}
+
+func executeOwned(connContext *ConnContext, name string, args []string) resp.Value {
 	log.Printf("[EXEC] %s %s", name, formatArgs(args))
 	if connContext.Transaction.Status == TransactionQueuing && !txPassthrough[name] {
+		if _, exists := connContext.Registry.Lookup(name); !exists || !validateCommand(name, args) {
+			connContext.Transaction.Dirty = true
+			return errorReply("ERR invalid command syntax")
+		}
 		connContext.Transaction.Enqueue(name, args)
 		return resp.Value{Type: resp.TypeSimpleString, String: "QUEUED"}
 	}
@@ -244,23 +297,10 @@ func Execute(connContext *ConnContext, name string, args []resp.Value) resp.Valu
 		return persistenceError()
 	}
 
-	// EXEC owns the exclusive lock itself because it must keep that lock while
-	// dispatching every queued command. All other commands share the same
-	// boundary and therefore cannot run in the middle of an EXEC batch.
-	if name == "EXEC" {
-		return executeCommand(connContext, name, args)
-	}
-	if writeCommands[name] {
-		connContext.Store.ExecMu.Lock()
-		defer connContext.Store.ExecMu.Unlock()
-		return executeCommand(connContext, name, args)
-	}
-	connContext.Store.ExecMu.RLock()
-	defer connContext.Store.ExecMu.RUnlock()
 	return executeCommand(connContext, name, args)
 }
 
-func executeCommand(connContext *ConnContext, name string, args []resp.Value) resp.Value {
+func executeCommand(connContext *ConnContext, name string, args []string) resp.Value {
 	handler, exists := connContext.Registry.Lookup(name)
 	if !exists {
 		return errorReply("ERR unknown command '" + name + "'")
@@ -268,10 +308,10 @@ func executeCommand(connContext *ConnContext, name string, args []resp.Value) re
 	return handler(connContext, args)
 }
 
-func formatArgs(args []resp.Value) string {
+func formatArgs(args []string) string {
 	parts := make([]string, len(args))
 	for i, a := range args {
-		parts[i] = a.String
+		parts[i] = a
 	}
 	return strings.Join(parts, " ")
 }

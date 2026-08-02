@@ -2,7 +2,6 @@ package engine
 
 import (
 	"net"
-	"sync/atomic"
 )
 
 type ConnContext struct {
@@ -13,12 +12,10 @@ type ConnContext struct {
 	ReplicaAddress string
 }
 
-var connCounter atomic.Uint64
-
 func NewConnContext(base *Context, connection net.Conn) *ConnContext {
 	return &ConnContext{
 		Context:    base,
-		ID:         connCounter.Add(1),
+		ID:         base.connectionCounter.Add(1),
 		Connection: connection,
 	}
 }

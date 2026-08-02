@@ -12,12 +12,34 @@ import (
 
 var testStoreConfig = store.Config{
 	ExpirationCheckInterval: time.Second,
-	ExpirationMaxSampleSize: 20,
-	ExpirationMaxRounds:     3,
+}
+
+type engineClock struct {
+	now time.Time
+}
+
+func (clock *engineClock) Now() time.Time {
+	return clock.now
+}
+
+func TestExpirationInvalidatesWatch(t *testing.T) {
+	clock := &engineClock{now: time.Unix(100, 0)}
+	base := NewContext(store.New(store.Config{Clock: clock}), nil, nil, SystemConfig{})
+	watcher := newTestConn(base)
+	reader := newTestConn(base)
+	exec(watcher, "SET", "key", "value", "PXAT", "102000")
+	exec(watcher, "WATCH", "key")
+	clock.now = time.Unix(103, 0)
+	exec(reader, "GET", "key")
+	exec(watcher, "MULTI")
+	result := exec(watcher, "EXEC")
+	if result.Type != resp.TypeArray || result.Array != nil {
+		t.Fatalf("EXEC result = %#v, want null array", result)
+	}
 }
 
 func newTestBase() *Context {
-	return NewContext(store.New(testStoreConfig), nil, nil)
+	return NewContext(store.New(testStoreConfig), nil, nil, SystemConfig{})
 }
 
 func newTestContext() *ConnContext {
@@ -54,6 +76,54 @@ func TestMultiExecBasic(t *testing.T) {
 	val, _ := connContext.Store.Dictionary.Get("foo")
 	if val != "bar" {
 		t.Errorf("expected foo=bar, got %q", val)
+	}
+}
+
+func TestInvalidCommandIsRejectedBeforeQueue(t *testing.T) {
+	connection := newTestContext()
+	exec(connection, "MULTI")
+	result := exec(connection, "SET", "only-key")
+	if result.Type != resp.TypeError || len(connection.Transaction.Queue) != 0 || !connection.Transaction.Dirty {
+		t.Fatalf("invalid queued command result = %#v, queue = %v, dirty = %v", result, connection.Transaction.Queue, connection.Transaction.Dirty)
+	}
+	result = exec(connection, "EXEC")
+	if result.Type != resp.TypeArray || result.Array != nil {
+		t.Fatalf("EXEC result = %#v, want null array", result)
+	}
+}
+
+func TestExecCommitsOneWALBatch(t *testing.T) {
+	appender := &recordingAppender{}
+	conn := NewConnContext(NewContext(store.New(testStoreConfig), appender, nil, SystemConfig{}), nil)
+	exec(conn, "MULTI")
+	exec(conn, "SET", "first", "1")
+	exec(conn, "SET", "second", "2")
+	result := exec(conn, "EXEC")
+	if result.Type != resp.TypeArray || len(result.Array) != 2 {
+		t.Fatalf("EXEC returned %#v", result)
+	}
+	appender.mutex.Lock()
+	defer appender.mutex.Unlock()
+	if appender.batches != 1 || len(appender.values) != 2 {
+		t.Fatalf("WAL batches = %d, values = %d, want 1 batch with 2 values", appender.batches, len(appender.values))
+	}
+}
+
+func TestExecWALFailureDoesNotChangeLiveStore(t *testing.T) {
+	database := store.New(testStoreConfig)
+	database.SetString("existing", "before", time.Time{})
+	conn := NewConnContext(NewContext(database, failingAppender{}, nil, SystemConfig{}), nil)
+	exec(conn, "MULTI")
+	exec(conn, "SET", "existing", "after")
+	exec(conn, "SET", "new", "value")
+	if result := exec(conn, "EXEC"); result.Type != resp.TypeError {
+		t.Fatalf("EXEC returned %#v, want persistence error", result)
+	}
+	if value, exists := database.Dictionary.Get("existing"); !exists || value != "before" {
+		t.Fatalf("existing value = %q, exists=%v, want before", value, exists)
+	}
+	if _, exists := database.Dictionary.Get("new"); exists {
+		t.Fatal("failed EXEC created new key")
 	}
 }
 
@@ -338,43 +408,30 @@ func TestUnwatchPreventsAbort(t *testing.T) {
 	}
 }
 
-func TestDictionaryVersionBumpsOnWrite(t *testing.T) {
-	store := store.New(store.Config{
-		ExpirationCheckInterval: time.Second,
-		ExpirationMaxSampleSize: 20,
-		ExpirationMaxRounds:     3,
-	})
-	dictionary := store.Dictionary
-
-	if dictionary.Version("missing") != 0 {
-		t.Error("missing key should have version 0")
-	}
-
-	dictionary.Set("k", "v1", 0)
-	v1 := dictionary.Version("k")
-
-	dictionary.Set("k", "v2", 0)
-	v2 := dictionary.Version("k")
-
-	if v2 <= v1 {
-		t.Errorf("version should increase on write: v1=%d v2=%d", v1, v2)
-	}
-}
-
 func TestWatchRegistryUnwatchOnDisconnect(t *testing.T) {
 	connContext := newTestContext()
 
 	exec(connContext, "SET", "foo", "bar")
 	exec(connContext, "WATCH", "foo")
 
-	UnwatchConn(connContext.ID)
+	connContext.Disconnect(connContext.ID)
 
-	globalWatch.mutex.Lock()
-	entries := globalWatch.watchers["foo"]
-	globalWatch.mutex.Unlock()
+	entries := connContext.watches.watchers["foo"]
 
 	if len(entries) != 0 {
-		t.Errorf("expected no watchers after UnwatchConn, got %d", len(entries))
+		t.Errorf("expected no watchers after disconnect, got %d", len(entries))
+	}
+}
+
+func TestWatchRegistriesAreIsolatedByEngine(t *testing.T) {
+	first := newTestContext()
+	second := newTestContext()
+
+	exec(first, "WATCH", "shared")
+	second.OnKeyMutate("shared")
+
+	if first.watches.isDirty(first.ID) {
+		t.Fatal("a mutation in another engine dirtied this engine's transaction")
 	}
 }
 
@@ -382,7 +439,7 @@ func TestTxStateReset(t *testing.T) {
 	connContext := newTestContext()
 
 	connContext.Transaction.Status = TransactionQueuing
-	connContext.Transaction.Enqueue("SET", []resp.Value{{String: "k"}, {String: "v"}})
+	connContext.Transaction.Enqueue("SET", []string{"k", "v"})
 	connContext.Transaction.Dirty = true
 	connContext.Transaction.Watches = map[string]uint64{"foo": 5}
 
@@ -405,9 +462,7 @@ func TestTxStateReset(t *testing.T) {
 func TestConcurrentWritesAndWatch(t *testing.T) {
 	ctx := NewContext(store.New(store.Config{
 		ExpirationCheckInterval: time.Second,
-		ExpirationMaxSampleSize: 20,
-		ExpirationMaxRounds:     3,
-	}), nil, nil)
+	}), nil, nil, SystemConfig{})
 
 	done := make(chan struct{})
 
@@ -444,14 +499,14 @@ func TestExecDoesNotAllowOtherCommandsToInterleave(t *testing.T) {
 	otherEntered := make(chan struct{})
 	var transactionCalls atomic.Int32
 
-	base.Registry.Register(blockCommand, func(_ *ConnContext, _ []resp.Value) resp.Value {
+	base.Registry.Register(blockCommand, func(_ *ConnContext, _ []string) resp.Value {
 		if transactionCalls.Add(1) == 1 {
 			close(transactionEntered)
 		}
 		<-releaseTransaction
 		return okReply()
 	})
-	base.Registry.Register(otherCommand, func(_ *ConnContext, _ []resp.Value) resp.Value {
+	base.Registry.Register(otherCommand, func(_ *ConnContext, _ []string) resp.Value {
 		close(otherEntered)
 		return okReply()
 	})
@@ -493,8 +548,4 @@ func TestExecDoesNotAllowOtherCommandsToInterleave(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("blocked command did not resume after EXEC")
 	}
-}
-
-func TestDatastructures(t *testing.T) {
-	_ = store.DefaultExpirationConfig
 }

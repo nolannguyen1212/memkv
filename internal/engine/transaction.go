@@ -1,7 +1,7 @@
 package engine
 
 import (
-	"sync"
+	"fmt"
 
 	"github.com/william1nguyen/valkeydb/internal/resp"
 )
@@ -13,9 +13,75 @@ const (
 	TransactionQueuing TransactionStatus = iota
 )
 
-type QueuedCommand struct {
-	Name string
-	Args []resp.Value
+type QueuedCommand = Command
+
+type transactionWAL struct {
+	values []resp.Value
+}
+
+func (log *transactionWAL) Append(value resp.Value) error {
+	log.values = append(log.values, value)
+	return nil
+}
+
+func (ctx *Context) Replay(commands []QueuedCommand) error {
+	ctx.directMu.Lock()
+	defer ctx.directMu.Unlock()
+
+	now := ctx.Store.Now()
+	stagedStore, err := ctx.Store.Clone(now)
+	if err != nil {
+		return err
+	}
+	stagedBase := NewContext(stagedStore, &transactionWAL{}, nil, ctx.system)
+	stagedBase.Registry = ctx.Registry
+	stagedConnection := NewConnContext(stagedBase, nil)
+	for _, command := range commands {
+		result := executeCommand(stagedConnection, command.Name, command.Args)
+		if result.Type == resp.TypeError {
+			return fmt.Errorf("execute %s: %s", command.Name, result.String)
+		}
+	}
+	return ctx.Store.Restore(stagedStore.Snapshot(), now)
+}
+
+func (ctx *Context) applyBatchOwned(commands []QueuedCommand) error {
+	now := ctx.Store.Now()
+	stagedStore, err := ctx.Store.Clone(now)
+	if err != nil {
+		return err
+	}
+	stagedWAL := &transactionWAL{}
+	stagedBase := NewContext(stagedStore, stagedWAL, nil, ctx.system)
+	stagedBase.Registry = ctx.Registry
+	stagedConnection := NewConnContext(stagedBase, nil)
+	for _, command := range commands {
+		result := executeCommand(stagedConnection, command.Name, command.Args)
+		if result.Type == resp.TypeError {
+			return fmt.Errorf("execute %s: %s", command.Name, result.String)
+		}
+	}
+	before := ctx.Store.Snapshot()
+	after := stagedStore.Snapshot()
+	return ctx.CommitBatch(stagedWAL.values, func() {
+		if err := ctx.Store.Restore(after, now); err != nil {
+			panic(err)
+		}
+		notifyChangedVersions(ctx.watches, before.Versions, after.Versions)
+	})
+}
+
+func notifyChangedVersions(watches *watchRegistry, before, after map[string]uint64) {
+	for key, version := range after {
+		if before[key] != version {
+			watches.notify(key)
+		}
+	}
+	for key := range before {
+		if _, exists := after[key]; !exists {
+			watches.notify(key)
+		}
+	}
 }
 
 type TransactionState struct {
@@ -32,28 +98,27 @@ func (transaction *TransactionState) Reset() {
 	transaction.Watches = nil
 }
 
-func (transaction *TransactionState) Enqueue(name string, args []resp.Value) {
-	transaction.Queue = append(transaction.Queue, QueuedCommand{Name: name, Args: args})
+func (transaction *TransactionState) Enqueue(name string, args []string) {
+	transaction.Queue = append(transaction.Queue, Command{Name: name, Args: append([]string(nil), args...)})
 }
 
 type watchEntry struct {
 	connID uint64
 }
 
-type WatchRegistry struct {
-	mutex    sync.Mutex
+type watchRegistry struct {
 	watchers map[string][]watchEntry
 	dirty    map[uint64]bool
 }
 
-var globalWatch = &WatchRegistry{
-	watchers: make(map[string][]watchEntry),
-	dirty:    make(map[uint64]bool),
+func newWatchRegistry() *watchRegistry {
+	return &watchRegistry{
+		watchers: make(map[string][]watchEntry),
+		dirty:    make(map[uint64]bool),
+	}
 }
 
-func (registry *WatchRegistry) Watch(key string, connID uint64) {
-	registry.mutex.Lock()
-	defer registry.mutex.Unlock()
+func (registry *watchRegistry) watch(key string, connID uint64) {
 	for _, entry := range registry.watchers[key] {
 		if entry.connID == connID {
 			return
@@ -62,23 +127,17 @@ func (registry *WatchRegistry) Watch(key string, connID uint64) {
 	registry.watchers[key] = append(registry.watchers[key], watchEntry{connID: connID})
 }
 
-func (registry *WatchRegistry) Notify(key string) {
-	registry.mutex.Lock()
-	defer registry.mutex.Unlock()
+func (registry *watchRegistry) notify(key string) {
 	for _, entry := range registry.watchers[key] {
 		registry.dirty[entry.connID] = true
 	}
 }
 
-func (registry *WatchRegistry) IsDirty(connID uint64) bool {
-	registry.mutex.Lock()
-	defer registry.mutex.Unlock()
+func (registry *watchRegistry) isDirty(connID uint64) bool {
 	return registry.dirty[connID]
 }
 
-func (registry *WatchRegistry) Unwatch(connID uint64) {
-	registry.mutex.Lock()
-	defer registry.mutex.Unlock()
+func (registry *watchRegistry) unwatch(connID uint64) {
 	delete(registry.dirty, connID)
 	for key, entries := range registry.watchers {
 		filtered := entries[:0]
@@ -95,10 +154,6 @@ func (registry *WatchRegistry) Unwatch(connID uint64) {
 	}
 }
 
-func UnwatchConn(connID uint64) {
-	globalWatch.Unwatch(connID)
-}
-
 func registerTransactionCommands(registry *Registry) {
 	registry.Register("MULTI", handleMulti)
 	registry.Register("EXEC", handleExec)
@@ -107,7 +162,7 @@ func registerTransactionCommands(registry *Registry) {
 	registry.Register("UNWATCH", handleUnwatch)
 }
 
-func handleMulti(connContext *ConnContext, _ []resp.Value) resp.Value {
+func handleMulti(connContext *ConnContext, _ []string) resp.Value {
 	if connContext.Transaction.Status == TransactionQueuing {
 		return errorReply("ERR MULTI calls can not be nested")
 	}
@@ -115,23 +170,17 @@ func handleMulti(connContext *ConnContext, _ []resp.Value) resp.Value {
 	return okReply()
 }
 
-func handleExec(connContext *ConnContext, _ []resp.Value) resp.Value {
+func handleExec(connContext *ConnContext, _ []string) resp.Value {
 	if connContext.Transaction.Status != TransactionQueuing {
 		return errorReply("ERR EXEC without MULTI")
 	}
 
 	defer func() {
-		globalWatch.Unwatch(connContext.ID)
+		connContext.watches.unwatch(connContext.ID)
 		connContext.Transaction.Reset()
 	}()
 
-	connContext.Store.ExecMu.Lock()
-	defer connContext.Store.ExecMu.Unlock()
-
-	// Check WATCH after acquiring the transaction boundary. Any ordinary
-	// command that started first has now completed its mutation notification;
-	// commands that start later cannot run until this EXEC finishes.
-	if connContext.Transaction.Dirty || globalWatch.IsDirty(connContext.ID) {
+	if connContext.Transaction.Dirty || connContext.watches.isDirty(connContext.ID) {
 		return resp.Value{Type: resp.TypeArray, Array: nil}
 	}
 	for key, version := range connContext.Transaction.Watches {
@@ -141,24 +190,55 @@ func handleExec(connContext *ConnContext, _ []resp.Value) resp.Value {
 	}
 
 	connContext.Transaction.Status = TransactionIdle
+	now := connContext.Store.Now()
+	stagedStore, err := connContext.Store.Clone(now)
+	if err != nil {
+		return errorReply("ERR transaction planning failed")
+	}
+	stagedWAL := &transactionWAL{}
+	stagedBase := NewContext(stagedStore, stagedWAL, nil, connContext.system)
+	stagedBase.Registry = connContext.Registry
+	stagedConnection := NewConnContext(stagedBase, nil)
 
 	results := make([]resp.Value, len(connContext.Transaction.Queue))
-	for i, cmd := range connContext.Transaction.Queue {
-		results[i] = executeCommand(connContext, cmd.Name, cmd.Args)
+	for index, command := range connContext.Transaction.Queue {
+		results[index] = executeCommand(stagedConnection, command.Name, command.Args)
+	}
+	if len(stagedWAL.values) == 0 {
+		return resp.Value{Type: resp.TypeArray, Array: results}
+	}
+	before := connContext.Store.Snapshot()
+	after := stagedStore.Snapshot()
+	if err := connContext.CommitBatch(stagedWAL.values, func() {
+		if err := connContext.Store.Restore(after, now); err != nil {
+			panic(err)
+		}
+		for key, version := range after.Versions {
+			if before.Versions[key] != version {
+				connContext.watches.notify(key)
+			}
+		}
+		for key := range before.Versions {
+			if _, exists := after.Versions[key]; !exists {
+				connContext.watches.notify(key)
+			}
+		}
+	}); err != nil {
+		return persistenceError()
 	}
 	return resp.Value{Type: resp.TypeArray, Array: results}
 }
 
-func handleDiscard(connContext *ConnContext, _ []resp.Value) resp.Value {
+func handleDiscard(connContext *ConnContext, _ []string) resp.Value {
 	if connContext.Transaction.Status != TransactionQueuing {
 		return errorReply("ERR DISCARD without MULTI")
 	}
-	globalWatch.Unwatch(connContext.ID)
+	connContext.watches.unwatch(connContext.ID)
 	connContext.Transaction.Reset()
 	return okReply()
 }
 
-func handleWatch(connContext *ConnContext, args []resp.Value) resp.Value {
+func handleWatch(connContext *ConnContext, args []string) resp.Value {
 	if len(args) == 0 {
 		return wrongArgCountError("watch")
 	}
@@ -169,15 +249,15 @@ func handleWatch(connContext *ConnContext, args []resp.Value) resp.Value {
 		connContext.Transaction.Watches = make(map[string]uint64)
 	}
 	for _, arg := range args {
-		key := arg.String
+		key := arg
 		connContext.Transaction.Watches[key] = connContext.Store.Keyspace.Version(key)
-		globalWatch.Watch(key, connContext.ID)
+		connContext.watches.watch(key, connContext.ID)
 	}
 	return okReply()
 }
 
-func handleUnwatch(connContext *ConnContext, _ []resp.Value) resp.Value {
-	globalWatch.Unwatch(connContext.ID)
+func handleUnwatch(connContext *ConnContext, _ []string) resp.Value {
+	connContext.watches.unwatch(connContext.ID)
 	connContext.Transaction.Dirty = false
 	connContext.Transaction.Watches = nil
 	return okReply()
