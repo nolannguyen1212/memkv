@@ -301,7 +301,7 @@ func TestReplicationIDChangesForNewPrimaryHistory(t *testing.T) {
 	}
 }
 
-func TestFullSyncAndLiveStreamConverge(t *testing.T) {
+func TestFullSyncClearsDeadlineAndLiveStreamConverges(t *testing.T) {
 	primary := NewManager(ManagerConfig{BacklogCapacity: 1024, ListeningAddress: ":6379"})
 	closeManagerAfterTest(t, primary)
 	source := store.New(store.Config{})
@@ -310,6 +310,11 @@ func TestFullSyncAndLiveStreamConverge(t *testing.T) {
 
 	serverConnection, replicaConnection := net.Pipe()
 	closeConnectionAfterTest(t, replicaConnection)
+
+	if err := serverConnection.SetDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
 	syncDone := make(chan error, 1)
 	go func() {
 		syncDone <- primary.HandlePSYNC(serverConnection, "replica", "?", -1, func() (store.LogicalSnapshot, int64, error) {

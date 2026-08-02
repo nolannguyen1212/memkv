@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"github.com/william1nguyen/memkv/internal/snapshot"
 	"github.com/william1nguyen/memkv/internal/store"
@@ -16,6 +17,10 @@ func (manager *Manager) HandlePSYNC(
 	offset int64,
 	captureSnapshot SnapshotCapture,
 ) error {
+	if err := connection.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear replication connection deadline: %w", err)
+	}
+
 	replica := newReplicaConnection(replicaAddress, connection)
 	manager.mutex.RLock()
 	primaryStreamID := manager.primaryStreamID
