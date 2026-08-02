@@ -43,6 +43,7 @@ func (manager *EvictionManager) RecordInsert(key string) {
 		return
 	}
 	if _, exists := manager.keys[key]; exists {
+		manager.order.MoveToFront(manager.elements[key])
 		return
 	}
 	manager.keys[key] = struct{}{}

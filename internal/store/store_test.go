@@ -126,3 +126,47 @@ func TestMaintenanceBoundsExpirationWork(t *testing.T) {
 		t.Fatalf("remaining entries = %d, want 1", len(database.entries))
 	}
 }
+
+func BenchmarkStoreSnapshot(b *testing.B) {
+	database := New(Config{})
+	for index := range 10_000 {
+		database.SetString(fmt.Sprintf("key-%d", index), "value", time.Time{})
+	}
+	b.ResetTimer()
+	for b.Loop() {
+		_ = database.Snapshot()
+	}
+}
+
+func BenchmarkStoreString(b *testing.B) {
+	database := New(Config{})
+	database.SetString("key", "value", time.Time{})
+	b.Run("get", func(b *testing.B) {
+		for b.Loop() {
+			_, _ = database.Dictionary.Get("key")
+		}
+	})
+	b.Run("set", func(b *testing.B) {
+		for b.Loop() {
+			database.SetString("key", "value", time.Time{})
+		}
+	})
+}
+
+func BenchmarkDeque(b *testing.B) {
+	deque := NewDeque[int]()
+	b.Run("push-pop", func(b *testing.B) {
+		for b.Loop() {
+			deque.PushBack(1)
+			_, _ = deque.PopFront()
+		}
+	})
+	b.Run("growth", func(b *testing.B) {
+		for b.Loop() {
+			candidate := NewDeque[int]()
+			for index := range 1_024 {
+				candidate.PushBack(index)
+			}
+		}
+	})
+}

@@ -22,6 +22,18 @@ func TestEvictionLRU(t *testing.T) {
 	}
 }
 
+func TestWritingExistingKeyRefreshesLRUOrder(t *testing.T) {
+	limit := 2
+	manager := NewEvictionManager(EvictionConfig{Strategy: EvictLRU, KeyLimit: &limit})
+	manager.RecordInsert("a")
+	manager.RecordInsert("b")
+	manager.RecordInsert("a")
+	manager.RecordInsert("c")
+	if candidate := manager.NextEviction(); candidate != "b" {
+		t.Fatalf("NextEviction() = %q, want b", candidate)
+	}
+}
+
 func TestEvictionNone(t *testing.T) {
 	limit := 2
 	em := NewEvictionManager(EvictionConfig{

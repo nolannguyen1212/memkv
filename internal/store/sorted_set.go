@@ -77,12 +77,15 @@ func (sortedSet *SortedSet) Rank(key, member string) (int, bool) {
 	if entry == nil {
 		return 0, false
 	}
-	for rank, item := range entry.items {
-		if item.Member == member {
-			return rank, true
-		}
+	score, exists := entry.scores[member]
+	if !exists {
+		return 0, false
 	}
-	return 0, false
+	rank := sort.Search(len(entry.items), func(index int) bool {
+		item := entry.items[index]
+		return item.Score > score || item.Score == score && item.Member >= member
+	})
+	return rank, rank < len(entry.items) && entry.items[rank].Member == member
 }
 
 func (sortedSet *SortedSet) Cardinality(key string) int {

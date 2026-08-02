@@ -78,7 +78,7 @@ func (list *List) PeekLeft(key string, count int) []string {
 	}
 	values := make([]string, count)
 	for index := range count {
-		values[index] = entry.List.At(index)
+		values[index] = entry.List.at(index)
 	}
 	return values
 }
@@ -93,7 +93,7 @@ func (list *List) PeekRight(key string, count int) []string {
 	}
 	values := make([]string, count)
 	for index := range count {
-		values[index] = entry.List.At(entry.List.Length() - index - 1)
+		values[index] = entry.List.at(entry.List.Length() - index - 1)
 	}
 	return values
 }
@@ -123,7 +123,7 @@ func (list *List) Range(key string, start, stop int) ([]string, bool) {
 
 	values := make([]string, 0, stop-start+1)
 	for index := start; index <= stop; index++ {
-		values = append(values, entry.List.At(index))
+		values = append(values, entry.List.at(index))
 	}
 	return values, true
 }
@@ -136,7 +136,7 @@ func (list *List) Snapshot() map[string][]string {
 		}
 		values := make([]string, entry.List.Length())
 		for index := range values {
-			values[index] = entry.List.At(index)
+			values[index] = entry.List.at(index)
 		}
 		snapshot[key] = values
 	}

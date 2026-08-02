@@ -60,7 +60,15 @@ func (d *Deque[T]) PopBack() (T, bool) {
 	return elem, true
 }
 
-func (d *Deque[T]) At(index int) T {
+func (d *Deque[T]) At(index int) (T, bool) {
+	var zero T
+	if index < 0 || index >= d.length {
+		return zero, false
+	}
+	return d.at(index), true
+}
+
+func (d *Deque[T]) at(index int) T {
 	return d.elements[(d.head+index)%d.capacity]
 }
 
@@ -68,7 +76,7 @@ func (d *Deque[T]) grow() {
 	newCap := d.capacity * 2
 	newElems := make([]T, newCap)
 	for i := 0; i < d.length; i++ {
-		newElems[i] = d.At(i)
+		newElems[i] = d.at(i)
 	}
 	d.elements = newElems
 	d.capacity = newCap
