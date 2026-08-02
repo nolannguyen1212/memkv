@@ -3,41 +3,50 @@ package replication
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 
 	"github.com/william1nguyen/valkeydb/internal/snapshot"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
-func (manager *Manager) HandlePSYNC(connection net.Conn, replicaAddress, replicationID string, offset int64, getSnapshot func() store.LogicalSnapshot) error {
+func (manager *Manager) HandlePSYNC(connection net.Conn, replicaAddress, replicationID string, offset int64, getSnapshot func() (store.LogicalSnapshot, error)) error {
 	manager.propagateMutex.Lock()
-	defer manager.propagateMutex.Unlock()
-
 	replica := newReplicaConnection(replicaAddress, connection)
-
 	manager.mutex.RLock()
 	primaryStreamID := manager.primaryStreamID
 	manager.mutex.RUnlock()
 
 	if replicationID == primaryStreamID && manager.backlog.CanServe(offset) {
-		return manager.partialSync(replica, offset)
+		delta := manager.backlog.ReadFrom(offset)
+		manager.addReplica(replica)
+		manager.propagateMutex.Unlock()
+		if err := manager.sendPartialSync(replica, primaryStreamID, offset, delta); err != nil {
+			manager.removeReplica(replica)
+			return err
+		}
+		return manager.activateReplica(replica)
 	}
-	return manager.fullSync(replica, getSnapshot)
+	syncOffset := manager.backlog.CurrentOffset()
+	state, err := getSnapshot()
+	if err != nil {
+		manager.propagateMutex.Unlock()
+		return fmt.Errorf("capture snapshot: %w", err)
+	}
+	manager.addReplica(replica)
+	manager.propagateMutex.Unlock()
+	if err := manager.sendFullSync(replica, primaryStreamID, syncOffset, state); err != nil {
+		manager.removeReplica(replica)
+		return err
+	}
+	return manager.activateReplica(replica)
 }
 
-func (manager *Manager) fullSync(replica *replicaConnection, getSnapshot func() store.LogicalSnapshot) error {
-	manager.mutex.RLock()
-	primaryStreamID := manager.primaryStreamID
-	manager.mutex.RUnlock()
-
-	offset := manager.backlog.CurrentOffset()
-	payload, err := snapshot.Encode(snapshot.Data{State: getSnapshot(), IncludedOffset: offset})
+func (manager *Manager) sendFullSync(replica *replicaConnection, primaryStreamID string, offset int64, state store.LogicalSnapshot) error {
+	payload, err := snapshot.Encode(snapshot.Data{State: state, IncludedOffset: offset})
 	if err != nil {
 		return fmt.Errorf("encode snapshot: %w", err)
 	}
-	log.Printf("replication: full sync to %s, snapshot=%d bytes, offset=%d", replica.Address, len(payload), offset)
-
+	manager.logger.Info("replication full sync", "replica", replica.Address, "snapshot_bytes", len(payload), "offset", offset)
 	header := fmt.Sprintf("+FULLRESYNC %s %d\r\n$%d\r\n", primaryStreamID, offset, len(payload))
 	if err := writeAll(replica.Connection, []byte(header)); err != nil {
 		return err
@@ -49,17 +58,11 @@ func (manager *Manager) fullSync(replica *replicaConnection, getSnapshot func() 
 		return err
 	}
 
-	manager.registerReplica(replica)
 	return nil
 }
 
-func (manager *Manager) partialSync(replica *replicaConnection, offset int64) error {
-	manager.mutex.RLock()
-	primaryStreamID := manager.primaryStreamID
-	manager.mutex.RUnlock()
-
-	delta := manager.backlog.ReadFrom(offset)
-	log.Printf("replication: partial sync to %s, offset=%d, delta=%d bytes", replica.Address, offset, len(delta))
+func (manager *Manager) sendPartialSync(replica *replicaConnection, primaryStreamID string, offset int64, delta []byte) error {
+	manager.logger.Info("replication partial sync", "replica", replica.Address, "offset", offset, "delta_bytes", len(delta))
 
 	header := fmt.Sprintf("+CONTINUE %s\r\n", primaryStreamID)
 	if err := writeAll(replica.Connection, []byte(header)); err != nil {
@@ -69,24 +72,28 @@ func (manager *Manager) partialSync(replica *replicaConnection, offset int64) er
 		return err
 	}
 
-	manager.registerReplica(replica)
 	return nil
 }
 
-func (manager *Manager) registerReplica(replica *replicaConnection) {
-	manager.addReplica(replica)
+func (manager *Manager) activateReplica(replica *replicaConnection) error {
+	select {
+	case <-replica.done:
+		return net.ErrClosed
+	default:
+	}
 	manager.waitGroup.Go(func() {
 		manager.watchReplica(replica)
 	})
 	manager.waitGroup.Go(func() {
 		manager.writeReplica(replica)
 	})
+	return nil
 }
 
 func (manager *Manager) watchReplica(replica *replicaConnection) {
 	_, _ = io.Copy(io.Discard, replica.Connection)
 	manager.removeReplica(replica)
-	log.Printf("replication: replica %s disconnected", replica.Address)
+	manager.logger.Info("replica disconnected", "replica", replica.Address)
 }
 
 func (manager *Manager) writeReplica(replica *replicaConnection) {

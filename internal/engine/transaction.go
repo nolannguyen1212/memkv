@@ -3,7 +3,7 @@ package engine
 import (
 	"fmt"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 )
 
 type TransactionStatus uint8
@@ -16,11 +16,11 @@ const (
 type QueuedCommand = Command
 
 type transactionWAL struct {
-	values []resp.Value
+	values mutation.Batch
 }
 
-func (log *transactionWAL) Append(value resp.Value) error {
-	log.values = append(log.values, value)
+func (log *transactionWAL) Append(command mutation.Command) error {
+	log.values = append(log.values, command)
 	return nil
 }
 
@@ -38,7 +38,7 @@ func (ctx *Context) Replay(commands []QueuedCommand) error {
 	stagedConnection := NewConnContext(stagedBase, nil)
 	for _, command := range commands {
 		result := executeCommand(stagedConnection, command.Name, command.Args)
-		if result.Type == resp.TypeError {
+		if result.Type == ResultError {
 			return fmt.Errorf("execute %s: %s", command.Name, result.String)
 		}
 	}
@@ -57,7 +57,7 @@ func (ctx *Context) applyBatchOwned(commands []QueuedCommand) error {
 	stagedConnection := NewConnContext(stagedBase, nil)
 	for _, command := range commands {
 		result := executeCommand(stagedConnection, command.Name, command.Args)
-		if result.Type == resp.TypeError {
+		if result.Type == ResultError {
 			return fmt.Errorf("execute %s: %s", command.Name, result.String)
 		}
 	}
@@ -155,14 +155,14 @@ func (registry *watchRegistry) unwatch(connID uint64) {
 }
 
 func registerTransactionCommands(registry *Registry) {
-	registry.Register("MULTI", handleMulti)
-	registry.Register("EXEC", handleExec)
-	registry.Register("DISCARD", handleDiscard)
-	registry.Register("WATCH", handleWatch)
-	registry.Register("UNWATCH", handleUnwatch)
+	registry.register("MULTI", handleMulti, arguments(0, 0), transactionControl)
+	registry.register("EXEC", handleExec, arguments(0, 0), transactionControl)
+	registry.register("DISCARD", handleDiscard, arguments(0, 0), transactionControl)
+	registry.register("WATCH", handleWatch, arguments(1, -1), transactionControl)
+	registry.register("UNWATCH", handleUnwatch, arguments(0, 0), transactionControl)
 }
 
-func handleMulti(connContext *ConnContext, _ []string) resp.Value {
+func handleMulti(connContext *ConnContext, _ []string) Result {
 	if connContext.Transaction.Status == TransactionQueuing {
 		return errorReply("ERR MULTI calls can not be nested")
 	}
@@ -170,22 +170,22 @@ func handleMulti(connContext *ConnContext, _ []string) resp.Value {
 	return okReply()
 }
 
-func handleExec(connContext *ConnContext, _ []string) resp.Value {
+func handleExec(connContext *ConnContext, _ []string) Result {
 	if connContext.Transaction.Status != TransactionQueuing {
 		return errorReply("ERR EXEC without MULTI")
 	}
 
-	defer func() {
-		connContext.watches.unwatch(connContext.ID)
-		connContext.Transaction.Reset()
-	}()
+	defer connContext.finishTransaction()
 
-	if connContext.Transaction.Dirty || connContext.watches.isDirty(connContext.ID) {
-		return resp.Value{Type: resp.TypeArray, Array: nil}
+	if connContext.Transaction.Dirty {
+		return errorReply("EXECABORT Transaction discarded because of previous errors.")
+	}
+	if connContext.watches.isDirty(connContext.ID) {
+		return nullArrayReply()
 	}
 	for key, version := range connContext.Transaction.Watches {
 		if connContext.Store.Keyspace.Version(key) != version {
-			return resp.Value{Type: resp.TypeArray, Array: nil}
+			return nullArrayReply()
 		}
 	}
 
@@ -200,12 +200,12 @@ func handleExec(connContext *ConnContext, _ []string) resp.Value {
 	stagedBase.Registry = connContext.Registry
 	stagedConnection := NewConnContext(stagedBase, nil)
 
-	results := make([]resp.Value, len(connContext.Transaction.Queue))
+	results := make([]Result, len(connContext.Transaction.Queue))
 	for index, command := range connContext.Transaction.Queue {
 		results[index] = executeCommand(stagedConnection, command.Name, command.Args)
 	}
 	if len(stagedWAL.values) == 0 {
-		return resp.Value{Type: resp.TypeArray, Array: results}
+		return Result{Type: ResultArray, Array: results}
 	}
 	before := connContext.Store.Snapshot()
 	after := stagedStore.Snapshot()
@@ -226,10 +226,15 @@ func handleExec(connContext *ConnContext, _ []string) resp.Value {
 	}); err != nil {
 		return persistenceError()
 	}
-	return resp.Value{Type: resp.TypeArray, Array: results}
+	return Result{Type: ResultArray, Array: results}
 }
 
-func handleDiscard(connContext *ConnContext, _ []string) resp.Value {
+func (connContext *ConnContext) finishTransaction() {
+	connContext.watches.unwatch(connContext.ID)
+	connContext.Transaction.Reset()
+}
+
+func handleDiscard(connContext *ConnContext, _ []string) Result {
 	if connContext.Transaction.Status != TransactionQueuing {
 		return errorReply("ERR DISCARD without MULTI")
 	}
@@ -238,7 +243,7 @@ func handleDiscard(connContext *ConnContext, _ []string) resp.Value {
 	return okReply()
 }
 
-func handleWatch(connContext *ConnContext, args []string) resp.Value {
+func handleWatch(connContext *ConnContext, args []string) Result {
 	if len(args) == 0 {
 		return wrongArgCountError("watch")
 	}
@@ -256,7 +261,7 @@ func handleWatch(connContext *ConnContext, args []string) resp.Value {
 	return okReply()
 }
 
-func handleUnwatch(connContext *ConnContext, _ []string) resp.Value {
+func handleUnwatch(connContext *ConnContext, _ []string) Result {
 	connContext.watches.unwatch(connContext.ID)
 	connContext.Transaction.Dirty = false
 	connContext.Transaction.Watches = nil

@@ -1,63 +1,79 @@
 package engine
 
-import "github.com/william1nguyen/valkeydb/internal/resp"
+import (
+	"github.com/william1nguyen/valkeydb/internal/mutation"
+)
 
-func okReply() resp.Value {
-	return resp.Value{Type: resp.TypeSimpleString, String: "OK"}
+type ResultType uint8
+
+const (
+	ResultSimpleString ResultType = iota + 1
+	ResultError
+	ResultInteger
+	ResultBulkString
+	ResultArray
+)
+
+type Result struct {
+	Type   ResultType
+	String string
+	Number int64
+	Array  []Result
+	IsNull bool
 }
 
-func pongReply() resp.Value {
-	return resp.Value{Type: resp.TypeSimpleString, String: "PONG"}
+func okReply() Result {
+	return Result{Type: ResultSimpleString, String: "OK"}
 }
 
-func errorReply(msg string) resp.Value {
-	return resp.Value{Type: resp.TypeError, String: msg}
+func pongReply() Result {
+	return Result{Type: ResultSimpleString, String: "PONG"}
 }
 
-func intReply(n int64) resp.Value {
-	return resp.Value{Type: resp.TypeInteger, Number: n}
+func errorReply(msg string) Result {
+	return Result{Type: ResultError, String: msg}
 }
 
-func stringReply(s string) resp.Value {
-	return resp.Value{Type: resp.TypeBulkString, String: s}
+func intReply(n int64) Result {
+	return Result{Type: ResultInteger, Number: n}
 }
 
-func nullStringReply() resp.Value {
-	return resp.Value{Type: resp.TypeBulkString, IsNull: true}
+func stringReply(s string) Result {
+	return Result{Type: ResultBulkString, String: s}
 }
 
-func arrayReply(items []resp.Value) resp.Value {
-	return resp.Value{Type: resp.TypeArray, Array: items}
+func nullStringReply() Result {
+	return Result{Type: ResultBulkString, IsNull: true}
 }
 
-func nullArrayReply() resp.Value {
-	return resp.Value{Type: resp.TypeArray, IsNull: true}
+func arrayReply(items []Result) Result {
+	return Result{Type: ResultArray, Array: items}
 }
 
-func emptyArrayReply() resp.Value {
-	return resp.Value{Type: resp.TypeArray, Array: []resp.Value{}}
+func nullArrayReply() Result {
+	return Result{Type: ResultArray, IsNull: true}
 }
 
-func wrongArgCountError(cmd string) resp.Value {
+func emptyArrayReply() Result {
+	return Result{Type: ResultArray, Array: []Result{}}
+}
+
+func wrongArgCountError(cmd string) Result {
 	return errorReply("ERR wrong number of arguments for '" + cmd + "'")
 }
 
-func notIntegerError() resp.Value {
+func notIntegerError() Result {
 	return errorReply("ERR value is not an integer or out of range")
 }
 
-func wrongTypeError() resp.Value {
+func wrongTypeError() Result {
 	return errorReply("WRONGTYPE Operation against a key holding the wrong kind of value")
 }
 
-func persistenceError() resp.Value {
+func persistenceError() Result {
 	return errorReply("MISCONF Persistence failed; writes are disabled to prevent data loss")
 }
 
-func buildBulkArray(items ...string) resp.Value {
-	arr := make([]resp.Value, len(items))
-	for i, item := range items {
-		arr[i] = resp.Value{Type: resp.TypeBulkString, String: item}
-	}
-	return resp.Value{Type: resp.TypeArray, Array: arr}
+func newMutation(items ...string) mutation.Command {
+	return mutation.New(items[0], items[1:]...)
 }

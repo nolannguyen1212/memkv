@@ -4,20 +4,20 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
 func registerSystemCommands(registry *Registry) {
-	registry.Register("AUTH", handleAuth)
-	registry.Register("INFO", handleInfo)
-	registry.Register("KEYS", handleKeys)
+	registry.register("AUTH", handleAuth, arguments(1, 2))
+	registry.register("INFO", handleInfo, arguments(0, 1))
+	registry.register("KEYS", handleKeys, arguments(1, 1))
 }
 
-func handleAuth(connContext *ConnContext, args []string) resp.Value {
+func handleAuth(connContext *ConnContext, args []string) Result {
 	if len(args) != 1 && len(args) != 2 {
 		return wrongArgCountError("auth")
 	}
@@ -31,7 +31,7 @@ func handleAuth(connContext *ConnContext, args []string) resp.Value {
 	return okReply()
 }
 
-func handleInfo(connContext *ConnContext, args []string) resp.Value {
+func handleInfo(connContext *ConnContext, args []string) Result {
 	section := "all"
 	if len(args) > 0 {
 		section = strings.ToLower(args[0])
@@ -83,7 +83,7 @@ func buildInfo(connContext *ConnContext, section string) string {
 	return strings.Join(lines, "\n")
 }
 
-func handleKeys(connContext *ConnContext, args []string) resp.Value {
+func handleKeys(connContext *ConnContext, args []string) Result {
 	if len(args) < 1 {
 		return wrongArgCountError("keys")
 	}
@@ -96,6 +96,7 @@ func handleKeys(connContext *ConnContext, args []string) resp.Value {
 			keys = append(keys, key)
 		}
 	}
+	sort.Strings(keys)
 
 	return valuesToArray(keys)
 }

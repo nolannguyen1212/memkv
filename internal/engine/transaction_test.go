@@ -2,11 +2,11 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
@@ -33,7 +33,7 @@ func TestExpirationInvalidatesWatch(t *testing.T) {
 	exec(reader, "GET", "key")
 	exec(watcher, "MULTI")
 	result := exec(watcher, "EXEC")
-	if result.Type != resp.TypeArray || result.Array != nil {
+	if result.Type != ResultArray || result.Array != nil || !result.IsNull {
 		t.Fatalf("EXEC result = %#v, want null array", result)
 	}
 }
@@ -50,12 +50,8 @@ func newTestConn(base *Context) *ConnContext {
 	return NewConnContext(base, nil)
 }
 
-func exec(connContext *ConnContext, name string, args ...string) resp.Value {
-	vals := make([]resp.Value, len(args))
-	for i, arg := range args {
-		vals[i] = resp.Value{Type: resp.TypeBulkString, String: arg}
-	}
-	return Execute(connContext, name, vals)
+func exec(connContext *ConnContext, name string, args ...string) Result {
+	return Execute(connContext, name, args)
 }
 
 func TestMultiExecBasic(t *testing.T) {
@@ -66,7 +62,7 @@ func TestMultiExecBasic(t *testing.T) {
 	exec(connContext, "SET", "counter", "1")
 	result := exec(connContext, "EXEC")
 
-	if result.Type != resp.TypeArray {
+	if result.Type != ResultArray {
 		t.Fatalf("EXEC expected array, got type %v", result.Type)
 	}
 	if len(result.Array) != 2 {
@@ -83,12 +79,12 @@ func TestInvalidCommandIsRejectedBeforeQueue(t *testing.T) {
 	connection := newTestContext()
 	exec(connection, "MULTI")
 	result := exec(connection, "SET", "only-key")
-	if result.Type != resp.TypeError || len(connection.Transaction.Queue) != 0 || !connection.Transaction.Dirty {
+	if result.Type != ResultError || len(connection.Transaction.Queue) != 0 || !connection.Transaction.Dirty {
 		t.Fatalf("invalid queued command result = %#v, queue = %v, dirty = %v", result, connection.Transaction.Queue, connection.Transaction.Dirty)
 	}
 	result = exec(connection, "EXEC")
-	if result.Type != resp.TypeArray || result.Array != nil {
-		t.Fatalf("EXEC result = %#v, want null array", result)
+	if result.Type != ResultError || !strings.HasPrefix(result.String, "EXECABORT") {
+		t.Fatalf("EXEC result = %#v, want EXECABORT", result)
 	}
 }
 
@@ -99,7 +95,7 @@ func TestExecCommitsOneWALBatch(t *testing.T) {
 	exec(conn, "SET", "first", "1")
 	exec(conn, "SET", "second", "2")
 	result := exec(conn, "EXEC")
-	if result.Type != resp.TypeArray || len(result.Array) != 2 {
+	if result.Type != ResultArray || len(result.Array) != 2 {
 		t.Fatalf("EXEC returned %#v", result)
 	}
 	appender.mutex.Lock()
@@ -116,7 +112,7 @@ func TestExecWALFailureDoesNotChangeLiveStore(t *testing.T) {
 	exec(conn, "MULTI")
 	exec(conn, "SET", "existing", "after")
 	exec(conn, "SET", "new", "value")
-	if result := exec(conn, "EXEC"); result.Type != resp.TypeError {
+	if result := exec(conn, "EXEC"); result.Type != ResultError {
 		t.Fatalf("EXEC returned %#v, want persistence error", result)
 	}
 	if value, exists := database.Dictionary.Get("existing"); !exists || value != "before" {
@@ -168,7 +164,7 @@ func TestNestedMultiReturnsError(t *testing.T) {
 	exec(connContext, "MULTI")
 	result := exec(connContext, "MULTI")
 
-	if result.Type != resp.TypeError {
+	if result.Type != ResultError {
 		t.Errorf("nested MULTI expected error, got %v", result.Type)
 	}
 	exec(connContext, "EXEC")
@@ -180,7 +176,7 @@ func TestNestedMultiReturnsError(t *testing.T) {
 func TestExecWithoutMultiReturnsError(t *testing.T) {
 	connContext := newTestContext()
 	result := exec(connContext, "EXEC")
-	if result.Type != resp.TypeError {
+	if result.Type != ResultError {
 		t.Errorf("EXEC without MULTI expected error, got %v", result.Type)
 	}
 }
@@ -190,7 +186,7 @@ func TestCommandInsideMultiReturnsQueued(t *testing.T) {
 	exec(connContext, "MULTI")
 	result := exec(connContext, "SET", "k", "v")
 
-	if result.Type != resp.TypeSimpleString || result.String != "QUEUED" {
+	if result.Type != ResultSimpleString || result.String != "QUEUED" {
 		t.Errorf("expected QUEUED, got %v %q", result.Type, result.String)
 	}
 
@@ -209,10 +205,10 @@ func TestExecErrorInOneSlotDoesNotAbort(t *testing.T) {
 	if len(result.Array) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(result.Array))
 	}
-	if result.Array[0].Type != resp.TypeSimpleString {
+	if result.Array[0].Type != ResultSimpleString {
 		t.Errorf("slot 0 (SET) should succeed, got type %v", result.Array[0].Type)
 	}
-	if result.Array[1].Type != resp.TypeError {
+	if result.Array[1].Type != ResultError {
 		t.Errorf("slot 1 (ZADD bad float) should be error, got type %v", result.Array[1].Type)
 	}
 	if result.Array[2].String != "hello" {
@@ -242,7 +238,7 @@ func TestDiscardClearsQueue(t *testing.T) {
 func TestDiscardWithoutMultiReturnsError(t *testing.T) {
 	connContext := newTestContext()
 	result := exec(connContext, "DISCARD")
-	if result.Type != resp.TypeError {
+	if result.Type != ResultError {
 		t.Errorf("DISCARD without MULTI expected error, got %v", result.Type)
 	}
 }
@@ -256,7 +252,7 @@ func TestWatchNoConflictExecSucceeds(t *testing.T) {
 	exec(connContext, "SET", "counter", "1")
 	result := exec(connContext, "EXEC")
 
-	if result.Type != resp.TypeArray || result.Array == nil {
+	if result.Type != ResultArray || result.Array == nil {
 		t.Fatal("EXEC should succeed when watched key was not modified")
 	}
 	val, _ := connContext.Store.Dictionary.Get("counter")
@@ -279,7 +275,7 @@ func TestWatchConflictAborts(t *testing.T) {
 
 	result := exec(connContext, "EXEC")
 
-	if result.Type != resp.TypeArray || result.Array != nil {
+	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should return nil array when watched key was modified")
 	}
 	val, _ := connContext.Store.Dictionary.Get("counter")
@@ -301,7 +297,7 @@ func TestWatchSetConflictAborts(t *testing.T) {
 	exec(other, "SREM", "myset", "a")
 
 	result := exec(connContext, "EXEC")
-	if result.Type != resp.TypeArray || result.Array != nil {
+	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched set key was modified via SREM")
 	}
 }
@@ -319,7 +315,7 @@ func TestWatchListConflictAborts(t *testing.T) {
 	exec(other, "LPOP", "mylist")
 
 	result := exec(connContext, "EXEC")
-	if result.Type != resp.TypeArray || result.Array != nil {
+	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched list key was modified via LPOP")
 	}
 }
@@ -337,7 +333,7 @@ func TestWatchHashConflictAborts(t *testing.T) {
 	exec(other, "HDEL", "myhash", "field")
 
 	result := exec(connContext, "EXEC")
-	if result.Type != resp.TypeArray || result.Array != nil {
+	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched hash key was modified via HDEL")
 	}
 }
@@ -355,7 +351,7 @@ func TestWatchZsetConflictAborts(t *testing.T) {
 	exec(other, "ZREM", "myzset", "a")
 
 	result := exec(connContext, "EXEC")
-	if result.Type != resp.TypeArray || result.Array != nil {
+	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched zset key was modified via ZREM")
 	}
 }
@@ -373,7 +369,7 @@ func TestWatchDeleteConflictAborts(t *testing.T) {
 	exec(other, "DEL", "foo")
 
 	result := exec(connContext, "EXEC")
-	if result.Type != resp.TypeArray || result.Array != nil {
+	if result.Type != ResultArray || result.Array != nil {
 		t.Fatal("EXEC should abort when watched key was deleted by another conn")
 	}
 }
@@ -382,7 +378,7 @@ func TestWatchInsideMultiReturnsError(t *testing.T) {
 	connContext := newTestContext()
 	exec(connContext, "MULTI")
 	result := exec(connContext, "WATCH", "foo")
-	if result.Type != resp.TypeError {
+	if result.Type != ResultError {
 		t.Errorf("WATCH inside MULTI should return error, got type %v %q", result.Type, result.String)
 	}
 	exec(connContext, "DISCARD")
@@ -403,7 +399,7 @@ func TestUnwatchPreventsAbort(t *testing.T) {
 	exec(connContext, "SET", "k", "1")
 	result := exec(connContext, "EXEC")
 
-	if result.Type != resp.TypeArray || result.Array == nil {
+	if result.Type != ResultArray || result.Array == nil {
 		t.Fatal("EXEC should succeed after UNWATCH even if key was modified")
 	}
 }
@@ -499,14 +495,14 @@ func TestExecDoesNotAllowOtherCommandsToInterleave(t *testing.T) {
 	otherEntered := make(chan struct{})
 	var transactionCalls atomic.Int32
 
-	base.Registry.Register(blockCommand, func(_ *ConnContext, _ []string) resp.Value {
+	base.Registry.Register(blockCommand, func(_ *ConnContext, _ []string) Result {
 		if transactionCalls.Add(1) == 1 {
 			close(transactionEntered)
 		}
 		<-releaseTransaction
 		return okReply()
 	})
-	base.Registry.Register(otherCommand, func(_ *ConnContext, _ []string) resp.Value {
+	base.Registry.Register(otherCommand, func(_ *ConnContext, _ []string) Result {
 		close(otherEntered)
 		return okReply()
 	})

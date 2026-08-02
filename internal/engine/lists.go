@@ -3,20 +3,19 @@ package engine
 import (
 	"strconv"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
 func registerListCommands(registry *Registry) {
-	registry.Register("LPUSH", handleLpush)
-	registry.Register("RPUSH", handleRpush)
-	registry.Register("LPOP", handleLpop)
-	registry.Register("RPOP", handleRpop)
-	registry.Register("LLEN", handleLlen)
-	registry.Register("LRANGE", handleLrange)
+	registry.register("LPUSH", handleLpush, arguments(2, -1), writeCommand)
+	registry.register("RPUSH", handleRpush, arguments(2, -1), writeCommand)
+	registry.register("LPOP", handleLpop, arguments(1, 2), writeCommand)
+	registry.register("RPOP", handleRpop, arguments(1, 2), writeCommand)
+	registry.register("LLEN", handleLlen, arguments(1, 1))
+	registry.register("LRANGE", handleLrange, arguments(3, 3))
 }
 
-func handleLpush(connContext *ConnContext, args []string) resp.Value {
+func handleLpush(connContext *ConnContext, args []string) Result {
 	if len(args) < 2 {
 		return wrongArgCountError("lpush")
 	}
@@ -27,7 +26,7 @@ func handleLpush(connContext *ConnContext, args []string) resp.Value {
 		return wrongTypeError()
 	}
 	length := connContext.Store.List.Length(key) + len(values)
-	record := buildBulkArray(append([]string{"LPUSH", key}, values...)...)
+	record := newMutation(append([]string{"LPUSH", key}, values...)...)
 	if err := connContext.Commit(record, func() {
 		connContext.Store.PrepareWrite(key, store.KeyTypeList, false)
 		connContext.Store.List.LeftPush(key, values...)
@@ -39,7 +38,7 @@ func handleLpush(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(length))
 }
 
-func handleRpush(connContext *ConnContext, args []string) resp.Value {
+func handleRpush(connContext *ConnContext, args []string) Result {
 	if len(args) < 2 {
 		return wrongArgCountError("rpush")
 	}
@@ -50,7 +49,7 @@ func handleRpush(connContext *ConnContext, args []string) resp.Value {
 		return wrongTypeError()
 	}
 	length := connContext.Store.List.Length(key) + len(values)
-	record := buildBulkArray(append([]string{"RPUSH", key}, values...)...)
+	record := newMutation(append([]string{"RPUSH", key}, values...)...)
 	if err := connContext.Commit(record, func() {
 		connContext.Store.PrepareWrite(key, store.KeyTypeList, false)
 		connContext.Store.List.RightPush(key, values...)
@@ -62,7 +61,7 @@ func handleRpush(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(length))
 }
 
-func handleLpop(connContext *ConnContext, args []string) resp.Value {
+func handleLpop(connContext *ConnContext, args []string) Result {
 	if len(args) < 1 || len(args) > 2 {
 		return wrongArgCountError("lpop")
 	}
@@ -85,7 +84,7 @@ func handleLpop(connContext *ConnContext, args []string) resp.Value {
 
 	values := connContext.Store.List.PeekLeft(key, count)
 	if len(values) > 0 {
-		record := buildBulkArray(append([]string{"LPOP"}, extractStrings(args)...)...)
+		record := newMutation(append([]string{"LPOP"}, extractStrings(args)...)...)
 		if err := connContext.Commit(record, func() {
 			connContext.Store.List.LeftPop(key, count)
 			connContext.OnKeyMutate(key)
@@ -96,10 +95,10 @@ func handleLpop(connContext *ConnContext, args []string) resp.Value {
 			return persistenceError()
 		}
 	}
-	return valuesToArray(values)
+	return popReply(values, len(args) == 2)
 }
 
-func handleRpop(connContext *ConnContext, args []string) resp.Value {
+func handleRpop(connContext *ConnContext, args []string) Result {
 	if len(args) < 1 || len(args) > 2 {
 		return wrongArgCountError("rpop")
 	}
@@ -122,7 +121,7 @@ func handleRpop(connContext *ConnContext, args []string) resp.Value {
 
 	values := connContext.Store.List.PeekRight(key, count)
 	if len(values) > 0 {
-		record := buildBulkArray(append([]string{"RPOP"}, extractStrings(args)...)...)
+		record := newMutation(append([]string{"RPOP"}, extractStrings(args)...)...)
 		if err := connContext.Commit(record, func() {
 			connContext.Store.List.RightPop(key, count)
 			connContext.OnKeyMutate(key)
@@ -133,10 +132,10 @@ func handleRpop(connContext *ConnContext, args []string) resp.Value {
 			return persistenceError()
 		}
 	}
-	return valuesToArray(values)
+	return popReply(values, len(args) == 2)
 }
 
-func handleLlen(connContext *ConnContext, args []string) resp.Value {
+func handleLlen(connContext *ConnContext, args []string) Result {
 	if len(args) != 1 {
 		return wrongArgCountError("llen")
 	}
@@ -149,7 +148,7 @@ func handleLlen(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(connContext.Store.List.Length(key)))
 }
 
-func handleLrange(connContext *ConnContext, args []string) resp.Value {
+func handleLrange(connContext *ConnContext, args []string) Result {
 	if len(args) != 3 {
 		return wrongArgCountError("lrange")
 	}
@@ -170,13 +169,23 @@ func handleLrange(connContext *ConnContext, args []string) resp.Value {
 	connContext.OnKeyRead(key)
 	values, exists := connContext.Store.List.Range(key, start, stop)
 	if !exists {
-		return nullArrayReply()
+		return emptyArrayReply()
 	}
 	return valuesToArray(values)
 }
 
-func valuesToArray(values []string) resp.Value {
-	items := make([]resp.Value, len(values))
+func popReply(values []string, countProvided bool) Result {
+	if countProvided {
+		return valuesToArray(values)
+	}
+	if len(values) == 0 {
+		return nullStringReply()
+	}
+	return stringReply(values[0])
+}
+
+func valuesToArray(values []string) Result {
+	items := make([]Result, len(values))
 	for i, v := range values {
 		items[i] = stringReply(v)
 	}

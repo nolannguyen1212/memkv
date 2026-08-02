@@ -3,7 +3,9 @@ package server
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -23,9 +25,13 @@ type Server struct {
 	shutdownChan chan struct{}
 	waitGroup    sync.WaitGroup
 	closeOnce    sync.Once
+	waitOnce     sync.Once
 	listenerMu   sync.Mutex
 	connMutex    sync.Mutex
 	connections  map[net.Conn]struct{}
+	ready        chan struct{}
+	stopped      chan struct{}
+	shutdownErr  error
 }
 
 type Config struct {
@@ -33,11 +39,15 @@ type Config struct {
 	Auth         string
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+	RESPLimits   resp.Limits
 }
 
 func New(config Config, ctx *engine.Context, logger *slog.Logger) *Server {
 	if logger == nil {
-		logger = slog.Default()
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	if config.RESPLimits == (resp.Limits{}) {
+		config.RESPLimits = resp.DefaultLimits()
 	}
 	return &Server{
 		config:       config,
@@ -45,6 +55,8 @@ func New(config Config, ctx *engine.Context, logger *slog.Logger) *Server {
 		ctx:          ctx,
 		shutdownChan: make(chan struct{}),
 		connections:  make(map[net.Conn]struct{}),
+		ready:        make(chan struct{}),
+		stopped:      make(chan struct{}),
 	}
 }
 
@@ -54,19 +66,31 @@ func (server *Server) ListenAndServe() error {
 		return fmt.Errorf("listen on %s: %w", server.config.Address, err)
 	}
 
+	return server.Serve(listener)
+}
+
+func (server *Server) Serve(listener net.Listener) error {
 	server.listenerMu.Lock()
 	select {
 	case <-server.shutdownChan:
 		server.listenerMu.Unlock()
-		_ = listener.Close()
-		return nil
+		return listener.Close()
 	default:
+		if server.listener != nil {
+			server.listenerMu.Unlock()
+			return errors.Join(fmt.Errorf("server already serving"), listener.Close())
+		}
 		server.listener = listener
+		close(server.ready)
 		server.listenerMu.Unlock()
 	}
 	server.logger.Info("server listening", "address", listener.Addr().String())
 
 	return server.acceptConnections()
+}
+
+func (server *Server) Ready() <-chan struct{} {
+	return server.ready
 }
 
 func (server *Server) acceptConnections() error {
@@ -101,23 +125,26 @@ func (server *Server) Close(shutdownContext context.Context) error {
 		close(server.shutdownChan)
 		server.listenerMu.Lock()
 		if server.listener != nil {
-			_ = server.listener.Close()
+			if err := server.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				server.shutdownErr = err
+			}
 		}
 		server.listenerMu.Unlock()
-		server.closeConnections()
+		server.shutdownErr = errors.Join(server.shutdownErr, server.closeConnections())
 	})
 
-	done := make(chan struct{})
-	go func() {
-		server.waitGroup.Wait()
-		close(done)
-	}()
+	server.waitOnce.Do(func() {
+		go func() {
+			server.waitGroup.Wait()
+			close(server.stopped)
+		}()
+	})
 
 	select {
-	case <-done:
-		return nil
+	case <-server.stopped:
+		return server.shutdownErr
 	case <-shutdownContext.Done():
-		return fmt.Errorf("close server: %w", shutdownContext.Err())
+		return errors.Join(server.shutdownErr, fmt.Errorf("close server: %w", shutdownContext.Err()))
 	}
 }
 
@@ -140,22 +167,26 @@ func (server *Server) untrackConnection(conn net.Conn) {
 	server.connMutex.Unlock()
 }
 
-func (server *Server) closeConnections() {
+func (server *Server) closeConnections() error {
 	server.connMutex.Lock()
 	defer server.connMutex.Unlock()
+	var closeErr error
 	for conn := range server.connections {
+		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			closeErr = errors.Join(closeErr, err)
+		}
+	}
+	return closeErr
+}
+
+func (server *Server) handleConnection(conn net.Conn) {
+	connectionTransferred := server.serveConnection(conn)
+	if !connectionTransferred {
 		_ = conn.Close()
 	}
 }
 
-func (server *Server) handleConnection(conn net.Conn) {
-	connTaken := false
-	defer func() {
-		if !connTaken {
-			_ = conn.Close()
-		}
-	}()
-
+func (server *Server) serveConnection(conn net.Conn) bool {
 	connContext := engine.NewConnContext(server.ctx, conn)
 	defer server.ctx.Disconnect(connContext.ID)
 
@@ -165,87 +196,118 @@ func (server *Server) handleConnection(conn net.Conn) {
 
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(server.config.ReadTimeout)); err != nil {
-			return
+			return false
 		}
 
-		request, err := resp.Decode(reader)
+		request, err := resp.DecodeWithLimits(reader, server.config.RESPLimits)
 		if err != nil {
-			return
+			return false
 		}
 
-		command, valid := server.parseCommand(request)
+		command, valid := parseCommand(request)
 		if !valid {
-			if err := server.writeResponse(writer, conn, resp.Value{Type: resp.TypeError, String: "ERR invalid command frame"}); err != nil {
-				return
+			if err := server.writeResponse(writer, conn, engine.Result{Type: engine.ResultError, String: "ERR invalid command frame"}); err != nil {
+				return false
 			}
 			continue
 		}
 		cmdName := command.Name
 
 		if !authenticated {
-			if server.handleUnauthenticated(conn, writer, request, cmdName, &authenticated, connContext) {
+			handled, err := server.handleUnauthenticated(conn, writer, command, &authenticated, connContext)
+			if err != nil {
+				return false
+			}
+			if handled {
 				continue
 			}
+		}
+		if cmdName == "PSYNC" {
+			response := connContext.SynchronizeReplica(command.Args)
+			server.ctx.CommandProcessed()
+			if response.Type == engine.ResultError {
+				if err := server.writeResponse(writer, conn, response); err != nil {
+					return false
+				}
+				continue
+			}
+			return true
 		}
 
 		response := engine.ExecuteCommand(connContext, command)
 		server.ctx.CommandProcessed()
 
-		if cmdName == "PSYNC" && response.Type != resp.TypeError {
-			connTaken = true
-			return
-		}
-
-		if err := conn.SetWriteDeadline(time.Now().Add(server.config.WriteTimeout)); err != nil {
-			return
-		}
 		if err := server.writeResponse(writer, conn, response); err != nil {
-			return
+			return false
 		}
 
 	}
 }
 
-func (server *Server) parseCommand(request resp.Value) (engine.Command, bool) {
+func parseCommand(request resp.Value) (engine.Command, bool) {
 	if request.Type != resp.TypeArray || len(request.Array) == 0 {
 		return engine.Command{}, false
 	}
 	for _, value := range request.Array {
-		if value.Type != resp.TypeBulkString && value.Type != resp.TypeSimpleString {
+		if value.IsNull || value.Type != resp.TypeBulkString && value.Type != resp.TypeSimpleString {
 			return engine.Command{}, false
 		}
 	}
-	return engine.NewCommand(request.Array[0].String, request.Array[1:]), true
+	args := make([]string, len(request.Array)-1)
+	for index, value := range request.Array[1:] {
+		args[index] = value.String
+	}
+	return engine.NewCommand(request.Array[0].String, args), true
 }
 
-func (server *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer, request resp.Value, cmdName string, authenticated *bool, connContext *engine.ConnContext) bool {
-	switch cmdName {
+func (server *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer, command engine.Command, authenticated *bool, connContext *engine.ConnContext) (bool, error) {
+	switch command.Name {
 	case "AUTH":
-		response := engine.ExecuteCommand(connContext, engine.NewCommand(cmdName, request.Array[1:]))
-		if response.Type == resp.TypeSimpleString && response.String == "OK" {
+		response := engine.ExecuteCommand(connContext, command)
+		if response.Type == engine.ResultSimpleString && response.String == "OK" {
 			*authenticated = true
 		}
-		_ = conn.SetWriteDeadline(time.Now().Add(server.config.WriteTimeout))
-		_ = server.writeResponse(writer, conn, response)
-		return true
+		return true, server.writeResponse(writer, conn, response)
 
 	case "PING", "QUIT":
-		return false
+		return false, nil
 
 	default:
-		response := resp.Value{Type: resp.TypeError, String: "NOAUTH Authentication required."}
-		_ = conn.SetWriteDeadline(time.Now().Add(server.config.WriteTimeout))
-		_ = server.writeResponse(writer, conn, response)
-		return true
+		response := engine.Result{Type: engine.ResultError, String: "NOAUTH Authentication required."}
+		return true, server.writeResponse(writer, conn, response)
 	}
 }
 
-func (server *Server) writeResponse(writer *bufio.Writer, conn net.Conn, value resp.Value) error {
-	if _, err := writer.WriteString(resp.Encode(value)); err != nil {
+func (server *Server) writeResponse(writer *bufio.Writer, conn net.Conn, result engine.Result) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(server.config.WriteTimeout)); err != nil {
+		return fmt.Errorf("set response deadline for %s: %w", conn.RemoteAddr(), err)
+	}
+	if _, err := writer.WriteString(resp.Encode(resultToRESP(result))); err != nil {
 		return fmt.Errorf("write response to %s: %w", conn.RemoteAddr(), err)
 	}
 	if err := writer.Flush(); err != nil {
 		return fmt.Errorf("flush response to %s: %w", conn.RemoteAddr(), err)
 	}
 	return nil
+}
+
+func resultToRESP(result engine.Result) resp.Value {
+	value := resp.Value{String: result.String, Number: result.Number, IsNull: result.IsNull}
+	switch result.Type {
+	case engine.ResultSimpleString:
+		value.Type = resp.TypeSimpleString
+	case engine.ResultError:
+		value.Type = resp.TypeError
+	case engine.ResultInteger:
+		value.Type = resp.TypeInteger
+	case engine.ResultBulkString:
+		value.Type = resp.TypeBulkString
+	case engine.ResultArray:
+		value.Type = resp.TypeArray
+		value.Array = make([]resp.Value, len(result.Array))
+		for index, item := range result.Array {
+			value.Array[index] = resultToRESP(item)
+		}
+	}
+	return value
 }

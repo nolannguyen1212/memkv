@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
@@ -38,19 +40,19 @@ func Open(path string, enabled bool) (*Log, error) {
 	return &Log{file: file, enabled: true}, nil
 }
 
-func (log *Log) Append(value resp.Value) error {
-	return log.append([]resp.Value{value})
+func (log *Log) Append(command mutation.Command) error {
+	return log.append(mutation.Batch{command})
 }
 
-func (log *Log) AppendBatch(values []resp.Value) error {
-	return log.append(values)
+func (log *Log) AppendBatch(batch mutation.Batch) error {
+	return log.append(batch)
 }
 
-func (log *Log) append(values []resp.Value) error {
+func (log *Log) append(batch mutation.Batch) error {
 	if !log.enabled || log.isReplaying.Load() {
 		return nil
 	}
-	record, err := encodeRecord(values)
+	record, err := encodeRecord(batch)
 	if err != nil {
 		return err
 	}
@@ -58,20 +60,16 @@ func (log *Log) append(values []resp.Value) error {
 	log.mutex.Lock()
 	defer log.mutex.Unlock()
 
-	if err := writeAllFile(log.file, record); err != nil {
+	if err := writeAll(log.file, record); err != nil {
 		return err
 	}
 	return log.file.Sync()
 }
 
-func (log *Log) Load(path string, dispatch func(cmd string, args []resp.Value) error) error {
+func (log *Log) Load(path string, dispatch func(mutation.Command) error) error {
 	return log.LoadBatches(path, func(commands []Command) error {
 		for _, command := range commands {
-			arguments := make([]resp.Value, len(command.Args))
-			for index, argument := range command.Args {
-				arguments[index] = resp.Value{Type: resp.TypeBulkString, String: argument}
-			}
-			if err := dispatch(command.Name, arguments); err != nil {
+			if err := dispatch(command); err != nil {
 				return fmt.Errorf("replay %s: %w", command.Name, err)
 			}
 		}
@@ -202,37 +200,61 @@ func (log *Log) RewriteAll(
 	defer log.mutex.Unlock()
 
 	temp := path + tempSuffix
-	file, err := os.Create(temp)
+	defer removeTemporaryWAL(temp)
+	if err := writeRewriteFile(temp, state); err != nil {
+		return err
+	}
+	newFile, err := os.OpenFile(temp, os.O_APPEND|os.O_RDWR, filePerm)
 	if err != nil {
 		return err
 	}
-	closed := false
-	defer func() {
-		if !closed {
-			_ = file.Close()
-		}
-	}()
+	if err := os.Rename(temp, path); err != nil {
+		return errors.Join(err, newFile.Close())
+	}
+	oldFile := log.file
+	log.file = newFile
+	var closeErr error
+	if oldFile != nil {
+		closeErr = oldFile.Close()
+	}
+	return errors.Join(closeErr, syncDirectory(filepath.Dir(path)))
+}
 
-	for key, entry := range state.Strings {
+func writeRewriteFile(path string, state store.LogicalSnapshot) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := writeLogicalSnapshot(file, state); err != nil {
+		return errors.Join(err, file.Close())
+	}
+	if err := file.Sync(); err != nil {
+		return errors.Join(err, file.Close())
+	}
+	return file.Close()
+}
+
+func writeLogicalSnapshot(file *os.File, state store.LogicalSnapshot) error {
+	for _, key := range sortedKeys(state.Strings) {
+		entry := state.Strings[key]
 		if err := writeCmd(file, "SET", key, entry.Value); err != nil {
 			return err
 		}
 	}
 
-	for key, entry := range state.Sets {
+	for _, key := range sortedKeys(state.Sets) {
+		entry := state.Sets[key]
 		if len(entry.Members) == 0 {
 			continue
 		}
-		members := make([]string, 0, len(entry.Members))
-		for member := range entry.Members {
-			members = append(members, member)
-		}
+		members := sortedKeys(entry.Members)
 		if err := writeCmd(file, append([]string{"SADD", key}, members...)...); err != nil {
 			return err
 		}
 	}
 
-	for key, values := range state.Lists {
+	for _, key := range sortedKeys(state.Lists) {
+		values := state.Lists[key]
 		if len(values) > 0 {
 			if err := writeCmd(file, append([]string{"RPUSH", key}, values...)...); err != nil {
 				return err
@@ -240,17 +262,21 @@ func (log *Log) RewriteAll(
 		}
 	}
 
-	for key, hash := range state.Hashes {
-		for field, value := range hash {
+	for _, key := range sortedKeys(state.Hashes) {
+		hash := state.Hashes[key]
+		for _, field := range sortedKeys(hash) {
+			value := hash[field]
 			if err := writeCmd(file, "HSET", key, field, value); err != nil {
 				return err
 			}
 		}
 	}
 
-	for key, members := range state.SortedSets {
+	for _, key := range sortedKeys(state.SortedSets) {
+		members := state.SortedSets[key]
 		args := []string{"ZADD", key}
-		for member, score := range members {
+		for _, member := range sortedKeys(members) {
+			score := members[member]
 			args = append(args, strconv.FormatFloat(score, 'g', -1, 64), member)
 		}
 		if len(args) > 2 {
@@ -260,7 +286,8 @@ func (log *Log) RewriteAll(
 		}
 	}
 
-	for key, metadata := range state.Keyspace {
+	for _, key := range sortedKeys(state.Keyspace) {
+		metadata := state.Keyspace[key]
 		if !metadata.ExpiredAt.IsZero() {
 			if err := writeCmd(file, "PEXPIREAT", key, strconv.FormatInt(metadata.ExpiredAt.UnixMilli(), 10)); err != nil {
 				return err
@@ -268,43 +295,44 @@ func (log *Log) RewriteAll(
 		}
 	}
 
-	if err := file.Sync(); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	closed = true
-	if err := os.Rename(temp, path); err != nil {
-		return err
-	}
-	newFile, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, filePerm)
-	if err != nil {
-		return err
-	}
-	oldFile := log.file
-	log.file = newFile
-	if oldFile != nil {
-		_ = oldFile.Close()
-	}
 	return nil
 }
 
-func writeCmd(file *os.File, args ...string) error {
-	arr := make([]resp.Value, len(args))
-	for i, arg := range args {
-		arr[i] = resp.Value{Type: resp.TypeBulkString, String: arg}
+func sortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
 	}
-	record, err := encodeRecord([]resp.Value{{Type: resp.TypeArray, Array: arr}})
+	sort.Strings(keys)
+	return keys
+}
+
+func removeTemporaryWAL(path string) {
+	_ = os.Remove(path)
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	return writeAllFile(file, record)
+	if err := directory.Sync(); err != nil {
+		return errors.Join(err, directory.Close())
+	}
+	return directory.Close()
 }
 
-func writeAllFile(file *os.File, data []byte) error {
+func writeCmd(file *os.File, args ...string) error {
+	record, err := encodeRecord(mutation.Batch{mutation.New(args[0], args[1:]...)})
+	if err != nil {
+		return err
+	}
+	return writeAll(file, record)
+}
+
+func writeAll(writer io.Writer, data []byte) error {
 	for len(data) > 0 {
-		written, err := file.Write(data)
+		written, err := writer.Write(data)
 		if err != nil {
 			return err
 		}

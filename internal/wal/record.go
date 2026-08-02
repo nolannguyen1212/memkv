@@ -7,7 +7,7 @@ import (
 	"hash/crc32"
 	"io"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 )
 
 const (
@@ -22,10 +22,7 @@ var (
 	recordChecksumTable = crc32.MakeTable(crc32.Castagnoli)
 )
 
-type Command struct {
-	Name string
-	Args []string
-}
+type Command = mutation.Command
 
 type truncatedRecordError struct {
 	message string
@@ -41,21 +38,13 @@ func (err *truncatedRecordError) Unwrap() error {
 	return err.err
 }
 
-func encodeRecord(values []resp.Value) ([]byte, error) {
-	if len(values) == 0 {
+func encodeRecord(commands mutation.Batch) ([]byte, error) {
+	if len(commands) == 0 {
 		return nil, fmt.Errorf("WAL record cannot be empty")
 	}
 	flags := byte(0)
-	if len(values) > 1 {
+	if len(commands) > 1 {
 		flags = flagBatch
-	}
-	commands := make([]Command, len(values))
-	for index, value := range values {
-		command, err := commandFromValue(value)
-		if err != nil {
-			return nil, fmt.Errorf("WAL command %d: %w", index, err)
-		}
-		commands[index] = command
 	}
 	payload, err := encodeCommands(commands)
 	if err != nil {
@@ -73,24 +62,6 @@ func encodeRecord(values []resp.Value) ([]byte, error) {
 	binary.BigEndian.PutUint32(record[10:14], crc32.Checksum(payload, recordChecksumTable))
 	copy(record[recordHeaderSize:], payload)
 	return record, nil
-}
-
-func commandFromValue(value resp.Value) (Command, error) {
-	if value.Type != resp.TypeArray || len(value.Array) == 0 {
-		return Command{}, fmt.Errorf("command must be a non-empty array")
-	}
-	name := value.Array[0]
-	if name.Type != resp.TypeBulkString && name.Type != resp.TypeSimpleString {
-		return Command{}, fmt.Errorf("command name must be a string")
-	}
-	command := Command{Name: name.String, Args: make([]string, len(value.Array)-1)}
-	for index, argument := range value.Array[1:] {
-		if argument.Type != resp.TypeBulkString && argument.Type != resp.TypeSimpleString {
-			return Command{}, fmt.Errorf("argument %d must be a string", index)
-		}
-		command.Args[index] = argument.String
-	}
-	return command, nil
 }
 
 func encodeCommands(commands []Command) ([]byte, error) {

@@ -1,29 +1,38 @@
 package wal_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/william1nguyen/valkeydb/internal/engine"
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/snapshot"
 	"github.com/william1nguyen/valkeydb/internal/store"
 	wallog "github.com/william1nguyen/valkeydb/internal/wal"
 )
 
-func command(name string, args ...string) (string, []resp.Value) {
-	values := make([]resp.Value, len(args))
-	for i, arg := range args {
-		values[i] = resp.Value{Type: resp.TypeBulkString, String: arg}
+func walCommand(value resp.Value) mutation.Command {
+	args := make([]string, len(value.Array)-1)
+	for index, argument := range value.Array[1:] {
+		args[index] = argument.String
 	}
-	return name, values
+	return mutation.New(value.Array[0].String, args...)
 }
 
-func execute(conn *engine.ConnContext, name string, args ...string) resp.Value {
-	cmd, values := command(name, args...)
-	return engine.Execute(conn, cmd, values)
+func walBatch(values []resp.Value) mutation.Batch {
+	batch := make(mutation.Batch, len(values))
+	for index, value := range values {
+		batch[index] = walCommand(value)
+	}
+	return batch
+}
+
+func execute(conn *engine.ConnContext, name string, args ...string) engine.Result {
+	return engine.Execute(conn, name, args)
 }
 
 func newStore() *store.Store {
@@ -46,8 +55,8 @@ func TestWALReplaysListPopsAndSortedSetMutations(t *testing.T) {
 	execute(source, "ZREM", "scores", "bob")
 
 	target := engine.NewConnContext(engine.NewContext(newStore(), nil, nil, engine.SystemConfig{}), nil)
-	if err := wal.Load(path, func(name string, args []resp.Value) error {
-		engine.Execute(target, name, args)
+	if err := wal.Load(path, func(command mutation.Command) error {
+		engine.ExecuteCommand(target, command)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -84,7 +93,7 @@ func TestWALRewriteKeepsSortedSetsAndContinuesAppending(t *testing.T) {
 		{Type: resp.TypeBulkString, String: "after"},
 		{Type: resp.TypeBulkString, String: "rewrite"},
 	}}
-	if err := wal.Append(set); err != nil {
+	if err := wal.Append(walCommand(set)); err != nil {
 		t.Fatal(err)
 	}
 	if err := wal.Close(); err != nil {
@@ -97,8 +106,8 @@ func TestWALRewriteKeepsSortedSetsAndContinuesAppending(t *testing.T) {
 	}
 	defer func() { _ = loader.Close() }()
 	target := engine.NewConnContext(engine.NewContext(newStore(), nil, nil, engine.SystemConfig{}), nil)
-	if err := loader.Load(path, func(name string, args []resp.Value) error {
-		engine.Execute(target, name, args)
+	if err := loader.Load(path, func(command mutation.Command) error {
+		engine.ExecuteCommand(target, command)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -108,6 +117,53 @@ func TestWALRewriteKeepsSortedSetsAndContinuesAppending(t *testing.T) {
 	}
 	if value, exists := target.Store.Dictionary.Get("after"); !exists || value != "rewrite" {
 		t.Fatalf("post-rewrite append missing: value=%q exists=%v", value, exists)
+	}
+}
+
+func TestWALRewriteIsDeterministic(t *testing.T) {
+	state := store.LogicalSnapshot{
+		Keyspace: map[string]store.KeyMetadata{
+			"string:b": {Type: store.KeyTypeString},
+			"string:a": {Type: store.KeyTypeString},
+			"set":      {Type: store.KeyTypeSet},
+			"hash":     {Type: store.KeyTypeHash},
+			"zset":     {Type: store.KeyTypeSortedSet},
+		},
+		Strings: map[string]store.StringEntry{
+			"string:b": {Value: "two"},
+			"string:a": {Value: "one"},
+		},
+		Sets: map[string]store.SetEntry{"set": {Members: map[string]struct{}{"b": {}, "a": {}}}},
+		Hashes: map[string]map[string]string{
+			"hash": {"b": "two", "a": "one"},
+		},
+		SortedSets: map[string]map[string]float64{
+			"zset": {"b": 2, "a": 1},
+		},
+	}
+	rewrite := func(name string) []byte {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), name)
+		log, err := wallog.Open(path, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := log.RewriteAll(state, path); err != nil {
+			t.Fatal(err)
+		}
+		if err := log.Close(); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	first := rewrite("first.wal")
+	second := rewrite("second.wal")
+	if !bytes.Equal(first, second) {
+		t.Fatal("equivalent logical snapshots produced different WAL bytes")
 	}
 }
 
@@ -147,7 +203,7 @@ func TestWALLoadRejectsTruncatedCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = wal.Close() }()
-	if err := wal.Load(path, func(string, []resp.Value) error { return nil }); err == nil {
+	if err := wal.Load(path, func(mutation.Command) error { return nil }); err == nil {
 		t.Fatal("truncated WAL should return a recovery error")
 	}
 }
@@ -181,7 +237,7 @@ func TestWALBatchRoundTrip(t *testing.T) {
 			{Type: resp.TypeBulkString, String: "b"},
 		}},
 	}
-	if err := log.AppendBatch(values); err != nil {
+	if err := log.AppendBatch(walBatch(values)); err != nil {
 		t.Fatal(err)
 	}
 	if err := log.Close(); err != nil {
@@ -194,8 +250,8 @@ func TestWALBatchRoundTrip(t *testing.T) {
 	}
 	defer func() { _ = loader.Close() }()
 	var names []string
-	if err := loader.Load(path, func(name string, _ []resp.Value) error {
-		names = append(names, name)
+	if err := loader.Load(path, func(command mutation.Command) error {
+		names = append(names, command.Name)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -247,7 +303,7 @@ func TestWALLoadRejectsCorruptRecord(t *testing.T) {
 				{Type: resp.TypeBulkString, String: "key"},
 				{Type: resp.TypeBulkString, String: "value"},
 			}}
-			if err := log.Append(value); err != nil {
+			if err := log.Append(walCommand(value)); err != nil {
 				t.Fatal(err)
 			}
 			if err := log.Close(); err != nil {
@@ -266,7 +322,7 @@ func TestWALLoadRejectsCorruptRecord(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = loader.Close() }()
-			err = loader.Load(path, func(string, []resp.Value) error { return nil })
+			err = loader.Load(path, func(mutation.Command) error { return nil })
 			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "offset 0") {
 				t.Fatalf("Load() error = %v, want %q at offset 0", err, test.want)
 			}
@@ -285,7 +341,7 @@ func TestWALRepairTailDropsIncompleteFinalRecord(t *testing.T) {
 		{Type: resp.TypeBulkString, String: "key"},
 		{Type: resp.TypeBulkString, String: "value"},
 	}}
-	if err := log.Append(first); err != nil {
+	if err := log.Append(walCommand(first)); err != nil {
 		t.Fatal(err)
 	}
 	if err := log.Close(); err != nil {
@@ -311,7 +367,7 @@ func TestWALRepairTailDropsIncompleteFinalRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	count := 0
-	if err := log.Load(path, func(string, []resp.Value) error {
+	if err := log.Load(path, func(mutation.Command) error {
 		count++
 		return nil
 	}); err != nil {
@@ -341,7 +397,7 @@ func TestBatchReplayFailureDoesNotPartiallyApply(t *testing.T) {
 			{Type: resp.TypeBulkString, String: "member"},
 		}},
 	}
-	if err := log.AppendBatch(values); err != nil {
+	if err := log.AppendBatch(walBatch(values)); err != nil {
 		t.Fatal(err)
 	}
 	if err := log.Close(); err != nil {
@@ -356,9 +412,7 @@ func TestBatchReplayFailureDoesNotPartiallyApply(t *testing.T) {
 	base := engine.NewContext(newStore(), nil, nil, engine.SystemConfig{})
 	err = loader.LoadBatches(path, func(commands []wallog.Command) error {
 		batch := make([]engine.QueuedCommand, len(commands))
-		for index, command := range commands {
-			batch[index] = engine.Command{Name: command.Name, Args: command.Args}
-		}
+		copy(batch, commands)
 		return base.Replay(batch)
 	})
 	if err == nil {
@@ -382,14 +436,14 @@ func TestWALLoadFromCheckpointOffset(t *testing.T) {
 			{Type: resp.TypeBulkString, String: "value"},
 		}}
 	}
-	if err := log.Append(value("before")); err != nil {
+	if err := log.Append(walCommand(value("before"))); err != nil {
 		t.Fatal(err)
 	}
 	offset, err := log.Offset()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := log.Append(value("after")); err != nil {
+	if err := log.Append(walCommand(value("after"))); err != nil {
 		t.Fatal(err)
 	}
 	var keys []string

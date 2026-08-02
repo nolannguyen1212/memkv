@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/william1nguyen/valkeydb/internal/engine"
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 	"github.com/william1nguyen/valkeydb/internal/replication"
-	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/server"
 	"github.com/william1nguyen/valkeydb/internal/snapshot"
 	"github.com/william1nguyen/valkeydb/internal/store"
@@ -32,7 +33,7 @@ type Application struct {
 
 func New(cfg Config, logger *slog.Logger) (*Application, error) {
 	if logger == nil {
-		logger = slog.Default()
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	database := store.New(store.Config{
 		ExpirationCheckInterval: cfg.ExpirationCheckInterval(),
@@ -50,6 +51,7 @@ func New(cfg Config, logger *slog.Logger) (*Application, error) {
 	replicationManager := replication.NewManager(replication.ManagerConfig{
 		BacklogCapacity:  cfg.Replication.BacklogSize,
 		ListeningAddress: cfg.Server.Address,
+		Logger:           logger,
 	})
 	executionContext := engine.NewContext(database, log, replicationManager, engine.SystemConfig{
 		Auth:            cfg.Server.Auth,
@@ -68,14 +70,14 @@ func New(cfg Config, logger *slog.Logger) (*Application, error) {
 	}
 
 	if err := a.recover(); err != nil {
-		_ = a.closeResources()
-		return nil, err
+		return nil, errors.Join(err, a.closeResources())
 	}
 	a.server = server.New(server.Config{
 		Address:      cfg.Server.Address,
 		Auth:         cfg.Server.Auth,
 		ReadTimeout:  cfg.ReadTimeout(),
 		WriteTimeout: cfg.WriteTimeout(),
+		RESPLimits:   cfg.RESPLimits(),
 	}, executionContext, logger)
 
 	return a, nil
@@ -177,18 +179,16 @@ func (a *Application) startReplica(ctx context.Context) {
 		return
 	}
 	dispatchContext := engine.NewConnContext(a.engine, nil)
-	apply := func(command string, args []resp.Value) error {
-		result := engine.Execute(dispatchContext, command, args)
-		if result.Type == resp.TypeError {
+	apply := func(command mutation.Command) error {
+		result := engine.ExecuteCommand(dispatchContext, command)
+		if result.Type == engine.ResultError {
 			return errors.New(result.String)
 		}
 		return nil
 	}
-	applyBatch := func(commands []replication.Command) error {
+	applyBatch := func(commands mutation.Batch) error {
 		batch := make([]engine.QueuedCommand, len(commands))
-		for index, command := range commands {
-			batch[index] = engine.NewCommand(command.Name, command.Args)
-		}
+		copy(batch, commands)
 		return a.engine.ApplyBatch(batch)
 	}
 	a.replication.StartReplica(
@@ -268,9 +268,7 @@ func (a *Application) replayWAL(startOffset int64) error {
 	}
 	return a.wal.LoadBatchesFrom(a.config.Persistence.WAL.Filename, startOffset, func(commands []wal.Command) error {
 		batch := make([]engine.QueuedCommand, len(commands))
-		for index, command := range commands {
-			batch[index] = engine.Command{Name: command.Name, Args: command.Args}
-		}
+		copy(batch, commands)
 		return a.engine.Replay(batch)
 	})
 }

@@ -3,22 +3,15 @@ package engine
 import (
 	"strings"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 )
 
-type Command struct {
-	Name string
-	Args []string
+type Command = mutation.Command
+
+func NewCommand(name string, arguments []string) Command {
+	return Command{Name: strings.ToUpper(name), Args: append([]string(nil), arguments...)}
 }
 
-func NewCommand(name string, arguments []resp.Value) Command {
-	args := make([]string, len(arguments))
-	for index, argument := range arguments {
-		args[index] = argument.String
-	}
-	return Command{Name: strings.ToUpper(name), Args: args}
-}
-
-func ExecuteCommand(connection *ConnContext, command Command) resp.Value {
+func ExecuteCommand(connection *ConnContext, command Command) Result {
 	return execute(connection, command)
 }

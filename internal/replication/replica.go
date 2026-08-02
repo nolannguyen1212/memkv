@@ -3,11 +3,11 @@ package replication
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"time"
 
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 	"github.com/william1nguyen/valkeydb/internal/resp"
 )
 
@@ -72,9 +72,12 @@ func (manager *Manager) streamCommands(session *replicaSession, apply ApplyComma
 				return fmt.Errorf("apply replication batch: %w", err)
 			}
 		} else {
-			name := strings.ToUpper(value.Array[0].String)
-			if err := apply(name, value.Array[1:]); err != nil {
-				return fmt.Errorf("apply %s: %w", name, err)
+			command, err := decodeCommand(value)
+			if err != nil {
+				return err
+			}
+			if err := apply(command); err != nil {
+				return fmt.Errorf("apply %s: %w", command.Name, err)
 			}
 		}
 		manager.replicationOffset.Add(int64(len(resp.Encode(value))))
@@ -84,7 +87,7 @@ func (manager *Manager) streamCommands(session *replicaSession, apply ApplyComma
 func (manager *Manager) reconnectLoop(ctx context.Context, address, username, password string, apply ApplyCommand, applyBatch ApplyBatch, restore ApplySnapshot) {
 	for {
 		if err := manager.connectToPrimary(ctx, address, username, password, apply, applyBatch, restore); err != nil && ctx.Err() == nil {
-			log.Printf("replication: primary %s disconnected: %v", address, err)
+			manager.logger.Warn("primary disconnected", "primary", address, "error", err)
 		}
 		if !waitForReconnect(ctx) {
 			return
@@ -95,16 +98,31 @@ func (manager *Manager) reconnectLoop(ctx context.Context, address, username, pa
 func decodeBatch(value resp.Value) ([]Command, error) {
 	commands := make([]Command, len(value.Array))
 	for index, item := range value.Array {
-		if item.Type != resp.TypeArray || len(item.Array) == 0 {
-			return nil, fmt.Errorf("replication batch command %d is invalid", index)
+		command, err := decodeCommand(item)
+		if err != nil {
+			return nil, fmt.Errorf("replication batch command %d: %w", index, err)
 		}
-		name := item.Array[0]
-		if name.Type != resp.TypeBulkString && name.Type != resp.TypeSimpleString {
-			return nil, fmt.Errorf("replication batch command %d has invalid name", index)
-		}
-		commands[index] = Command{Name: strings.ToUpper(name.String), Args: item.Array[1:]}
+		commands[index] = command
 	}
 	return commands, nil
+}
+
+func decodeCommand(value resp.Value) (Command, error) {
+	if value.Type != resp.TypeArray || len(value.Array) == 0 {
+		return Command{}, fmt.Errorf("command is invalid")
+	}
+	name := value.Array[0]
+	if name.Type != resp.TypeBulkString && name.Type != resp.TypeSimpleString {
+		return Command{}, fmt.Errorf("command name is invalid")
+	}
+	args := make([]string, len(value.Array)-1)
+	for index, argument := range value.Array[1:] {
+		if argument.Type != resp.TypeBulkString && argument.Type != resp.TypeSimpleString {
+			return Command{}, fmt.Errorf("command argument %d is invalid", index)
+		}
+		args[index] = argument.String
+	}
+	return mutation.New(strings.ToUpper(name.String), args...), nil
 }
 
 func waitForReconnect(ctx context.Context) bool {

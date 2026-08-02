@@ -5,23 +5,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
 func registerStringCommands(registry *Registry) {
-	registry.Register("SET", handleSet)
-	registry.Register("GET", handleGet)
-	registry.Register("DEL", handleDel)
-	registry.Register("EXPIRE", handleExpire)
-	registry.Register("PEXPIREAT", handlePExpireAt)
-	registry.Register("TTL", handleTTL)
-	registry.Register("PING", handlePing)
-	registry.Register("FLUSHDB", handleFlush)
-	registry.Register("FLUSHALL", handleFlush)
+	registry.register("SET", handleSet, syntax(2, 4, validateSetSyntax), writeCommand)
+	registry.register("GET", handleGet, arguments(1, 1))
+	registry.register("DEL", handleDel, arguments(1, -1), writeCommand)
+	registry.register("EXPIRE", handleExpire, arguments(2, 2), writeCommand)
+	registry.register("PEXPIREAT", handlePExpireAt, arguments(2, 2), writeCommand)
+	registry.register("TTL", handleTTL, arguments(1, 1))
+	registry.register("PING", handlePing, arguments(0, 1))
+	registry.register("FLUSHDB", handleFlush, arguments(0, 0), writeCommand)
+	registry.register("FLUSHALL", handleFlush, arguments(0, 0), writeCommand)
 }
 
-func handleSet(connContext *ConnContext, args []string) resp.Value {
+func handleSet(connContext *ConnContext, args []string) Result {
 	if len(args) != 2 && len(args) != 4 {
 		return wrongArgCountError("set")
 	}
@@ -56,9 +55,9 @@ func handleSet(connContext *ConnContext, args []string) resp.Value {
 		}
 	}
 
-	record := buildBulkArray("SET", key, value)
+	record := newMutation("SET", key, value)
 	if !expiredAt.IsZero() {
-		record = buildBulkArray("SET", key, value, "PXAT", strconv.FormatInt(expiredAt.UnixMilli(), 10))
+		record = newMutation("SET", key, value, "PXAT", strconv.FormatInt(expiredAt.UnixMilli(), 10))
 	}
 	if err := connContext.Commit(record, func() {
 		connContext.Store.SetString(key, value, expiredAt)
@@ -77,7 +76,7 @@ func relativeExpiration(now time.Time, amount int64, unit time.Duration) (time.T
 	return now.Add(time.Duration(amount) * unit), true
 }
 
-func handleGet(connContext *ConnContext, args []string) resp.Value {
+func handleGet(connContext *ConnContext, args []string) Result {
 	if len(args) < 1 {
 		return wrongArgCountError("get")
 	}
@@ -94,7 +93,7 @@ func handleGet(connContext *ConnContext, args []string) resp.Value {
 	return stringReply(value)
 }
 
-func handleDel(connContext *ConnContext, args []string) resp.Value {
+func handleDel(connContext *ConnContext, args []string) Result {
 	if len(args) < 1 {
 		return wrongArgCountError("del")
 	}
@@ -114,7 +113,7 @@ func handleDel(connContext *ConnContext, args []string) resp.Value {
 	if len(keys) == 0 {
 		return intReply(0)
 	}
-	record := buildBulkArray(append([]string{"DEL"}, keys...)...)
+	record := newMutation(append([]string{"DEL"}, keys...)...)
 	if err := connContext.Commit(record, func() {
 		for _, key := range keys {
 			connContext.Store.DeleteKey(key)
@@ -127,7 +126,7 @@ func handleDel(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(len(keys)))
 }
 
-func handleExpire(connContext *ConnContext, args []string) resp.Value {
+func handleExpire(connContext *ConnContext, args []string) Result {
 	if len(args) != 2 {
 		return wrongArgCountError("expire")
 	}
@@ -149,7 +148,7 @@ func handleExpire(connContext *ConnContext, args []string) resp.Value {
 			return errorReply("ERR invalid expire time")
 		}
 	}
-	record := buildBulkArray("PEXPIREAT", key, strconv.FormatInt(expiredAt.UnixMilli(), 10))
+	record := newMutation("PEXPIREAT", key, strconv.FormatInt(expiredAt.UnixMilli(), 10))
 	if err := connContext.Commit(record, func() {
 		connContext.Store.Keyspace.ExpireAt(key, expiredAt)
 		connContext.watches.notify(key)
@@ -160,7 +159,7 @@ func handleExpire(connContext *ConnContext, args []string) resp.Value {
 	return intReply(1)
 }
 
-func handlePExpireAt(connContext *ConnContext, args []string) resp.Value {
+func handlePExpireAt(connContext *ConnContext, args []string) Result {
 	if len(args) != 2 {
 		return wrongArgCountError("pexpireat")
 	}
@@ -175,7 +174,7 @@ func handlePExpireAt(connContext *ConnContext, args []string) resp.Value {
 		return intReply(0)
 	}
 	expiredAt := time.UnixMilli(ms)
-	record := buildBulkArray("PEXPIREAT", key, args[1])
+	record := newMutation("PEXPIREAT", key, args[1])
 	if err := connContext.Commit(record, func() {
 		connContext.Store.Keyspace.ExpireAt(key, expiredAt)
 		connContext.watches.notify(key)
@@ -185,7 +184,7 @@ func handlePExpireAt(connContext *ConnContext, args []string) resp.Value {
 	return intReply(1)
 }
 
-func handleTTL(connContext *ConnContext, args []string) resp.Value {
+func handleTTL(connContext *ConnContext, args []string) Result {
 	if len(args) != 1 {
 		return wrongArgCountError("ttl")
 	}
@@ -194,19 +193,19 @@ func handleTTL(connContext *ConnContext, args []string) resp.Value {
 	return intReply(connContext.Store.Keyspace.TTL(args[0]))
 }
 
-func handlePing(connContext *ConnContext, args []string) resp.Value {
+func handlePing(connContext *ConnContext, args []string) Result {
 	if len(args) == 0 {
 		return pongReply()
 	}
 	return stringReply(args[0])
 }
 
-func handleFlush(connContext *ConnContext, _ []string) resp.Value {
+func handleFlush(connContext *ConnContext, _ []string) Result {
 	state := connContext.Store.Snapshot()
 	if len(state.Keyspace) == 0 {
 		return okReply()
 	}
-	if err := connContext.Commit(buildBulkArray("FLUSHALL"), func() {
+	if err := connContext.Commit(newMutation("FLUSHALL"), func() {
 		for _, key := range connContext.Store.Clear() {
 			connContext.watches.notify(key)
 		}

@@ -1,19 +1,20 @@
 package engine
 
 import (
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"sort"
+
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
 func registerSetCommands(registry *Registry) {
-	registry.Register("SADD", handleSadd)
-	registry.Register("SREM", handleSrem)
-	registry.Register("SMEMBERS", handleSmembers)
-	registry.Register("SISMEMBER", handleSismember)
-	registry.Register("SCARD", handleScard)
+	registry.register("SADD", handleSadd, arguments(2, -1), writeCommand)
+	registry.register("SREM", handleSrem, arguments(2, -1), writeCommand)
+	registry.register("SMEMBERS", handleSmembers, arguments(1, 1))
+	registry.register("SISMEMBER", handleSismember, arguments(2, 2))
+	registry.register("SCARD", handleScard, arguments(1, 1))
 }
 
-func handleSadd(connContext *ConnContext, args []string) resp.Value {
+func handleSadd(connContext *ConnContext, args []string) Result {
 	if len(args) < 2 {
 		return wrongArgCountError("sadd")
 	}
@@ -27,7 +28,7 @@ func handleSadd(connContext *ConnContext, args []string) resp.Value {
 	if count == 0 {
 		return intReply(0)
 	}
-	record := buildBulkArray(append([]string{"SADD", key}, members...)...)
+	record := newMutation(append([]string{"SADD", key}, members...)...)
 	if err := connContext.Commit(record, func() {
 		connContext.Store.PrepareWrite(key, store.KeyTypeSet, false)
 		connContext.Store.Set.Add(key, members...)
@@ -39,7 +40,7 @@ func handleSadd(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(count))
 }
 
-func handleSrem(connContext *ConnContext, args []string) resp.Value {
+func handleSrem(connContext *ConnContext, args []string) Result {
 	if len(args) < 2 {
 		return wrongArgCountError("srem")
 	}
@@ -53,7 +54,7 @@ func handleSrem(connContext *ConnContext, args []string) resp.Value {
 	if count == 0 {
 		return intReply(0)
 	}
-	record := buildBulkArray(append([]string{"SREM", key}, members...)...)
+	record := newMutation(append([]string{"SREM", key}, members...)...)
 	if err := connContext.Commit(record, func() {
 		connContext.Store.Set.Remove(key, members...)
 		connContext.OnKeyMutate(key)
@@ -67,7 +68,7 @@ func handleSrem(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(count))
 }
 
-func handleSmembers(connContext *ConnContext, args []string) resp.Value {
+func handleSmembers(connContext *ConnContext, args []string) Result {
 	if len(args) != 1 {
 		return wrongArgCountError("smembers")
 	}
@@ -79,17 +80,18 @@ func handleSmembers(connContext *ConnContext, args []string) resp.Value {
 	connContext.OnKeyRead(key)
 	members, exists := connContext.Store.Set.Members(key)
 	if !exists {
-		return nullArrayReply()
+		return emptyArrayReply()
 	}
+	sort.Strings(members)
 
-	items := make([]resp.Value, len(members))
+	items := make([]Result, len(members))
 	for i, member := range members {
 		items[i] = stringReply(member)
 	}
 	return arrayReply(items)
 }
 
-func handleSismember(connContext *ConnContext, args []string) resp.Value {
+func handleSismember(connContext *ConnContext, args []string) Result {
 	if len(args) != 2 {
 		return wrongArgCountError("sismember")
 	}
@@ -105,7 +107,7 @@ func handleSismember(connContext *ConnContext, args []string) resp.Value {
 	return intReply(0)
 }
 
-func handleScard(connContext *ConnContext, args []string) resp.Value {
+func handleScard(connContext *ConnContext, args []string) Result {
 	if len(args) != 1 {
 		return wrongArgCountError("scard")
 	}

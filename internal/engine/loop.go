@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
@@ -16,7 +15,7 @@ var ErrStopped = errors.New("engine stopped")
 type commandRequest struct {
 	connection *ConnContext
 	command    Command
-	reply      chan resp.Value
+	reply      chan Result
 }
 
 type restoreRequest struct {
@@ -111,26 +110,26 @@ func (ctx *Context) Ready() <-chan struct{} {
 	return ctx.ready
 }
 
-func (ctx *Context) Submit(connection *ConnContext, name string, args []resp.Value) (resp.Value, error) {
+func (ctx *Context) Submit(connection *ConnContext, name string, args []string) (Result, error) {
 	return ctx.SubmitCommand(connection, NewCommand(name, args))
 }
 
-func (ctx *Context) SubmitCommand(connection *ConnContext, command Command) (resp.Value, error) {
+func (ctx *Context) SubmitCommand(connection *ConnContext, command Command) (Result, error) {
 	request := &commandRequest{
 		connection: connection,
 		command:    command,
-		reply:      make(chan resp.Value, 1),
+		reply:      make(chan Result, 1),
 	}
 	select {
 	case ctx.events <- event{command: request}:
 	case <-ctx.done:
-		return resp.Value{}, ErrStopped
+		return Result{}, ErrStopped
 	}
 	select {
 	case reply := <-request.reply:
 		return reply, nil
 	case <-ctx.done:
-		return resp.Value{}, ErrStopped
+		return Result{}, ErrStopped
 	}
 }
 

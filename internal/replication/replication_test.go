@@ -3,6 +3,7 @@ package replication
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/snapshot"
 	"github.com/william1nguyen/valkeydb/internal/store"
@@ -84,17 +86,68 @@ func TestParseFullResync(t *testing.T) {
 	}
 }
 
+func TestBacklogWrapsWithAbsoluteOffsets(t *testing.T) {
+	backlog := NewBacklog(4)
+	backlog.Write([]byte("abcdef"))
+	if backlog.CurrentOffset() != 6 {
+		t.Fatalf("current offset = %d, want 6", backlog.CurrentOffset())
+	}
+	for _, offset := range []int64{0, 1, 7} {
+		if backlog.CanServe(offset) {
+			t.Fatalf("CanServe(%d) = true", offset)
+		}
+	}
+	for _, offset := range []int64{2, 4, 6} {
+		if !backlog.CanServe(offset) {
+			t.Fatalf("CanServe(%d) = false", offset)
+		}
+	}
+	if actual := string(backlog.ReadFrom(2)); actual != "cdef" {
+		t.Fatalf("ReadFrom(2) = %q, want cdef", actual)
+	}
+	if actual := string(backlog.ReadFrom(4)); actual != "ef" {
+		t.Fatalf("ReadFrom(4) = %q, want ef", actual)
+	}
+}
+
+func TestStaleOffsetFallsBackToFullSync(t *testing.T) {
+	manager := NewManager(ManagerConfig{BacklogCapacity: 4})
+	closeManagerAfterTest(t, manager)
+	manager.propagate([]byte("abcdef"))
+	serverConnection, replicaConnection := net.Pipe()
+	closeConnectionAfterTest(t, replicaConnection)
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.HandlePSYNC(serverConnection, "replica", manager.primaryStreamID, 1, func() (store.LogicalSnapshot, error) {
+			return store.LogicalSnapshot{}, nil
+		})
+	}()
+	reader := bufio.NewReader(replicaConnection)
+	header, err := readLine(reader)
+	if err != nil || !strings.HasPrefix(header, "+FULLRESYNC ") {
+		t.Fatalf("header = %q, error = %v", header, err)
+	}
+	if err := receiveSnapshot(reader, func(store.LogicalSnapshot) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPartialSyncHasNoGapBeforeReplicaRegistration(t *testing.T) {
 	manager := NewManager(ManagerConfig{BacklogCapacity: 1024})
 	closeManagerAfterTest(t, manager)
 	initial := []byte("initial")
-	manager.Propagate(initial)
+	manager.propagate(initial)
 
 	serverConnection, replicaConnection := net.Pipe()
 	closeConnectionAfterTest(t, replicaConnection)
 	done := make(chan struct{})
 	go func() {
-		_ = manager.HandlePSYNC(serverConnection, "replica", manager.primaryStreamID, 0, func() store.LogicalSnapshot { return store.LogicalSnapshot{} })
+		_ = manager.HandlePSYNC(serverConnection, "replica", manager.primaryStreamID, 0, func() (store.LogicalSnapshot, error) {
+			return store.LogicalSnapshot{}, nil
+		})
 		close(done)
 	}()
 
@@ -115,7 +168,7 @@ func TestPartialSyncHasNoGapBeforeReplicaRegistration(t *testing.T) {
 	next := []byte("next")
 	propagated := make(chan struct{})
 	go func() {
-		manager.Propagate(next)
+		manager.propagate(next)
 		close(propagated)
 	}()
 	received = make([]byte, len(next))
@@ -151,10 +204,10 @@ func TestStreamAppliesCommittedBatchAsOneUnit(t *testing.T) {
 	closeManagerAfterTest(t, manager)
 	standaloneCalled := false
 	var batch []Command
-	err := manager.streamCommands(session, func(string, []resp.Value) error {
+	err := manager.streamCommands(session, func(mutation.Command) error {
 		standaloneCalled = true
 		return nil
-	}, func(commands []Command) error {
+	}, func(commands mutation.Batch) error {
 		batch = commands
 		return nil
 	})
@@ -184,7 +237,7 @@ func TestSlowReplicaQueueOverflowDisconnectsReplica(t *testing.T) {
 			t.Fatal("replica queue filled before capacity")
 		}
 	}
-	manager.Propagate([]byte("overflow"))
+	manager.propagate([]byte("overflow"))
 	if len(manager.ActiveReplicas()) != 0 {
 		t.Fatal("slow replica remained registered after queue overflow")
 	}
@@ -211,7 +264,9 @@ func TestFullSyncAndLiveStreamConverge(t *testing.T) {
 	closeConnectionAfterTest(t, replicaConnection)
 	syncDone := make(chan error, 1)
 	go func() {
-		syncDone <- primary.fullSync(newReplicaConnection("replica", serverConnection), source.Snapshot)
+		syncDone <- primary.HandlePSYNC(serverConnection, "replica", "?", -1, func() (store.LogicalSnapshot, error) {
+			return source.Snapshot(), nil
+		})
 	}()
 	reader := bufio.NewReader(replicaConnection)
 	header, err := readLine(reader)
@@ -227,27 +282,22 @@ func TestFullSyncAndLiveStreamConverge(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	live := resp.Value{Type: resp.TypeArray, Array: []resp.Value{
-		{Type: resp.TypeBulkString, String: "SET"},
-		{Type: resp.TypeBulkString, String: "live"},
-		{Type: resp.TypeBulkString, String: "two"},
-	}}
 	applied := make(chan error, 1)
 	mutationApplied := make(chan struct{})
 	replica := NewManager(ManagerConfig{BacklogCapacity: 1})
 	closeManagerAfterTest(t, replica)
 	go func() {
 		session := &replicaSession{reader: reader}
-		applied <- replica.streamCommands(session, func(name string, args []resp.Value) error {
-			if name != "SET" {
-				return fmt.Errorf("unexpected command %s", name)
+		applied <- replica.streamCommands(session, func(command mutation.Command) error {
+			if command.Name != "SET" {
+				return fmt.Errorf("unexpected command %s", command.Name)
 			}
-			target.SetString(args[0].String, args[1].String, time.Time{})
+			target.SetString(command.Args[0], command.Args[1], time.Time{})
 			close(mutationApplied)
 			return nil
-		}, func([]Command) error { return nil })
+		}, func(mutation.Batch) error { return nil })
 	}()
-	primary.Propagate([]byte(resp.Encode(live)))
+	primary.Propagate(mutation.Batch{mutation.New("SET", "live", "two")})
 	select {
 	case <-mutationApplied:
 	case err := <-applied:
@@ -260,5 +310,58 @@ func TestFullSyncAndLiveStreamConverge(t *testing.T) {
 	}
 	if value, exists := target.Dictionary.Get("initial"); !exists || value != "one" {
 		t.Fatalf("initial value = %q, exists = %v", value, exists)
+	}
+}
+
+func TestFullSyncSocketWriteDoesNotBlockPropagation(t *testing.T) {
+	manager := NewManager(ManagerConfig{BacklogCapacity: 1024})
+	closeManagerAfterTest(t, manager)
+	serverConnection, replicaConnection := net.Pipe()
+	snapshotCaptured := make(chan struct{})
+	syncDone := make(chan error, 1)
+	go func() {
+		syncDone <- manager.HandlePSYNC(serverConnection, "slow", "?", -1, func() (store.LogicalSnapshot, error) {
+			close(snapshotCaptured)
+			return store.LogicalSnapshot{}, nil
+		})
+	}()
+	select {
+	case <-snapshotCaptured:
+	case <-time.After(time.Second):
+		t.Fatal("snapshot was not captured")
+	}
+	propagated := make(chan struct{})
+	go func() {
+		manager.Propagate(mutation.Batch{mutation.New("SET", "key", "value")})
+		close(propagated)
+	}()
+	select {
+	case <-propagated:
+	case <-time.After(time.Second):
+		t.Fatal("propagation blocked on full-sync socket write")
+	}
+	if err := replicaConnection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-syncDone; err == nil {
+		t.Fatal("full sync succeeded after peer closed without reading")
+	}
+}
+
+func TestSnapshotCaptureFailureDoesNotRegisterReplica(t *testing.T) {
+	manager := NewManager(ManagerConfig{BacklogCapacity: 1024})
+	closeManagerAfterTest(t, manager)
+	serverConnection, replicaConnection := net.Pipe()
+	closeConnectionAfterTest(t, serverConnection)
+	closeConnectionAfterTest(t, replicaConnection)
+	expected := errors.New("snapshot unavailable")
+	err := manager.HandlePSYNC(serverConnection, "replica", "?", -1, func() (store.LogicalSnapshot, error) {
+		return store.LogicalSnapshot{}, expected
+	})
+	if !errors.Is(err, expected) {
+		t.Fatalf("HandlePSYNC() error = %v, want %v", err, expected)
+	}
+	if len(manager.ActiveReplicas()) != 0 {
+		t.Fatal("replica registered after snapshot capture failure")
 	}
 }

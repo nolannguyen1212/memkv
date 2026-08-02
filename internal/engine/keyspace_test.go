@@ -7,17 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
 type recordingAppender struct {
 	mutex   sync.Mutex
-	values  []resp.Value
+	values  mutation.Batch
 	batches int
 }
 
-func (appender *recordingAppender) AppendBatch(values []resp.Value) error {
+func (appender *recordingAppender) AppendBatch(values mutation.Batch) error {
 	appender.mutex.Lock()
 	defer appender.mutex.Unlock()
 	appender.batches++
@@ -32,9 +32,9 @@ type failAtAppender struct {
 	at   int
 }
 
-func (failingAppender) Append(resp.Value) error { return errors.New("disk full") }
+func (failingAppender) Append(mutation.Command) error { return errors.New("disk full") }
 
-func (appender *failAtAppender) Append(resp.Value) error {
+func (appender *failAtAppender) Append(mutation.Command) error {
 	appender.call++
 	if appender.call == appender.at {
 		return errors.New("disk full")
@@ -42,7 +42,7 @@ func (appender *failAtAppender) Append(resp.Value) error {
 	return nil
 }
 
-func (appender *recordingAppender) Append(value resp.Value) error {
+func (appender *recordingAppender) Append(value mutation.Command) error {
 	appender.mutex.Lock()
 	defer appender.mutex.Unlock()
 	appender.values = append(appender.values, value)
@@ -54,9 +54,7 @@ func (appender *recordingAppender) commandNames() []string {
 	defer appender.mutex.Unlock()
 	result := make([]string, 0, len(appender.values))
 	for _, value := range appender.values {
-		if len(value.Array) > 0 {
-			result = append(result, value.Array[0].String)
-		}
+		result = append(result, value.Name)
 	}
 	return result
 }
@@ -64,20 +62,20 @@ func (appender *recordingAppender) commandNames() []string {
 func TestTypedKeyspaceRejectsWrongTypeAndSetReplacesType(t *testing.T) {
 	conn := newTestContext()
 
-	if result := exec(conn, "SADD", "shared", "member"); result.Type != resp.TypeInteger || result.Number != 1 {
+	if result := exec(conn, "SADD", "shared", "member"); result.Type != ResultInteger || result.Number != 1 {
 		t.Fatalf("SADD failed: %#v", result)
 	}
-	if result := exec(conn, "GET", "shared"); result.Type != resp.TypeError {
+	if result := exec(conn, "GET", "shared"); result.Type != ResultError {
 		t.Fatalf("GET against set should return WRONGTYPE, got %#v", result)
 	}
-	if result := exec(conn, "LPUSH", "shared", "item"); result.Type != resp.TypeError {
+	if result := exec(conn, "LPUSH", "shared", "item"); result.Type != ResultError {
 		t.Fatalf("LPUSH against set should return WRONGTYPE, got %#v", result)
 	}
 
-	if result := exec(conn, "SET", "shared", "value"); result.Type != resp.TypeSimpleString {
+	if result := exec(conn, "SET", "shared", "value"); result.Type != ResultSimpleString {
 		t.Fatalf("SET should replace the old type, got %#v", result)
 	}
-	if result := exec(conn, "SCARD", "shared"); result.Type != resp.TypeError {
+	if result := exec(conn, "SCARD", "shared"); result.Type != ResultError {
 		t.Fatalf("old set type should no longer exist, got %#v", result)
 	}
 	if value, exists := conn.Store.Dictionary.Get("shared"); !exists || value != "value" {
@@ -133,13 +131,13 @@ func TestReplicationSnapshotIncludesSortedSets(t *testing.T) {
 func TestPersistenceFailureStopsFurtherWrites(t *testing.T) {
 	base := NewContext(store.New(testStoreConfig), failingAppender{}, nil, SystemConfig{})
 	conn := NewConnContext(base, nil)
-	if result := exec(conn, "SET", "first", "value"); result.Type != resp.TypeError {
+	if result := exec(conn, "SET", "first", "value"); result.Type != ResultError {
 		t.Fatalf("failed WAL append should fail the command, got %#v", result)
 	}
 	if _, exists := conn.Store.Dictionary.Get("first"); exists {
 		t.Fatal("failed WAL append changed memory")
 	}
-	if result := exec(conn, "SET", "second", "value"); result.Type != resp.TypeError || result.String == "" {
+	if result := exec(conn, "SET", "second", "value"); result.Type != ResultError || result.String == "" {
 		t.Fatalf("writes should remain disabled after persistence failure, got %#v", result)
 	}
 	if _, exists := conn.Store.Dictionary.Get("second"); exists {
@@ -150,7 +148,7 @@ func TestPersistenceFailureStopsFurtherWrites(t *testing.T) {
 func TestSetCommitsAbsoluteExpirationAsOneRecord(t *testing.T) {
 	appender := &recordingAppender{}
 	conn := NewConnContext(NewContext(store.New(testStoreConfig), appender, nil, SystemConfig{}), nil)
-	if result := exec(conn, "SET", "key", "value", "PX", "5000"); result.Type != resp.TypeSimpleString {
+	if result := exec(conn, "SET", "key", "value", "PX", "5000"); result.Type != ResultSimpleString {
 		t.Fatalf("SET returned %#v", result)
 	}
 
@@ -160,7 +158,7 @@ func TestSetCommitsAbsoluteExpirationAsOneRecord(t *testing.T) {
 		t.Fatalf("WAL records = %d, want 1", len(appender.values))
 	}
 	record := appender.values[0]
-	if len(record.Array) != 5 || record.Array[3].String != "PXAT" {
+	if len(record.Args) != 4 || record.Args[2] != "PXAT" {
 		t.Fatalf("WAL record = %#v, want SET key value PXAT timestamp", record)
 	}
 	if conn.Store.Keyspace.Version("key") != 1 {
@@ -182,7 +180,7 @@ func TestFailedWALPreservesStateForDeleteAndExpire(t *testing.T) {
 			database := store.New(testStoreConfig)
 			database.SetString("key", "value", time.Time{})
 			conn := NewConnContext(NewContext(database, failingAppender{}, nil, SystemConfig{}), nil)
-			if result := exec(conn, test.command, test.args...); result.Type != resp.TypeError {
+			if result := exec(conn, test.command, test.args...); result.Type != ResultError {
 				t.Fatalf("%s returned %#v, want persistence error", test.command, result)
 			}
 			if value, exists := database.Dictionary.Get("key"); !exists || value != "value" {
@@ -247,7 +245,7 @@ func TestFailedWALPreservesCollectionState(t *testing.T) {
 			}
 			before := database.Snapshot()
 			conn := NewConnContext(NewContext(database, failingAppender{}, nil, SystemConfig{}), nil)
-			if result := exec(conn, test.command, test.args...); result.Type != resp.TypeError {
+			if result := exec(conn, test.command, test.args...); result.Type != ResultError {
 				t.Fatalf("%s returned %#v, want persistence error", test.command, result)
 			}
 			after := database.Snapshot()
@@ -263,9 +261,12 @@ func TestFailedEvictionWALDoesNotDeleteVictim(t *testing.T) {
 	database := store.New(store.Config{KeyLimit: &limit, EvictStrategy: "lru"})
 	database.SetString("first", "value", time.Time{})
 	appender := &failAtAppender{at: 2}
-	conn := NewConnContext(NewContext(database, appender, nil, SystemConfig{}), nil)
+	base := NewContext(database, appender, nil, SystemConfig{})
+	watcher := NewConnContext(base, nil)
+	conn := NewConnContext(base, nil)
+	exec(watcher, "WATCH", "first")
 
-	if result := exec(conn, "SET", "second", "value"); result.Type != resp.TypeError {
+	if result := exec(conn, "SET", "second", "value"); result.Type != ResultError {
 		t.Fatalf("SET returned %#v, want persistence error", result)
 	}
 	if _, exists := database.Dictionary.Get("first"); !exists {
@@ -277,16 +278,19 @@ func TestFailedEvictionWALDoesNotDeleteVictim(t *testing.T) {
 	if database.Eviction.KeyCount() != 2 {
 		t.Fatalf("LRU key count = %d, want 2", database.Eviction.KeyCount())
 	}
+	if base.watches.isDirty(watcher.ID) {
+		t.Fatal("failed eviction invalidated WATCH before deleting victim")
+	}
 }
 
 func TestSystemConfigIsIsolatedByEngine(t *testing.T) {
 	first := NewConnContext(NewContext(store.New(testStoreConfig), nil, nil, SystemConfig{Auth: "first"}), nil)
 	second := NewConnContext(NewContext(store.New(testStoreConfig), nil, nil, SystemConfig{Auth: "second"}), nil)
 
-	if result := exec(first, "AUTH", "first"); result.Type == resp.TypeError {
+	if result := exec(first, "AUTH", "first"); result.Type == ResultError {
 		t.Fatalf("first engine rejected its password: %#v", result)
 	}
-	if result := exec(second, "AUTH", "first"); result.Type != resp.TypeError {
+	if result := exec(second, "AUTH", "first"); result.Type != ResultError {
 		t.Fatalf("second engine accepted another engine's password: %#v", result)
 	}
 }

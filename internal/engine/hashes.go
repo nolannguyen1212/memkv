@@ -1,20 +1,21 @@
 package engine
 
 import (
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"sort"
+
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
 func registerHashCommands(registry *Registry) {
-	registry.Register("HSET", handleHset)
-	registry.Register("HGET", handleHget)
-	registry.Register("HDEL", handleHdel)
-	registry.Register("HGETALL", handleHgetall)
-	registry.Register("HEXISTS", handleHexists)
-	registry.Register("HLEN", handleHlen)
+	registry.register("HSET", handleHset, syntax(3, -1, oddAfterKey), writeCommand)
+	registry.register("HGET", handleHget, arguments(2, 2))
+	registry.register("HDEL", handleHdel, arguments(2, -1), writeCommand)
+	registry.register("HGETALL", handleHgetall, arguments(1, 1))
+	registry.register("HEXISTS", handleHexists, arguments(2, 2))
+	registry.register("HLEN", handleHlen, arguments(1, 1))
 }
 
-func handleHset(connContext *ConnContext, args []string) resp.Value {
+func handleHset(connContext *ConnContext, args []string) Result {
 	if len(args) < 3 || len(args)%2 == 0 {
 		return wrongArgCountError("hset")
 	}
@@ -28,7 +29,7 @@ func handleHset(connContext *ConnContext, args []string) resp.Value {
 	if !connContext.Store.Hash.WouldChange(key, fieldValues...) {
 		return intReply(int64(count))
 	}
-	record := buildBulkArray(append([]string{"HSET", key}, fieldValues...)...)
+	record := newMutation(append([]string{"HSET", key}, fieldValues...)...)
 	if err := connContext.Commit(record, func() {
 		connContext.Store.PrepareWrite(key, store.KeyTypeHash, false)
 		connContext.Store.Hash.Set(key, fieldValues...)
@@ -40,7 +41,7 @@ func handleHset(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(count))
 }
 
-func handleHget(connContext *ConnContext, args []string) resp.Value {
+func handleHget(connContext *ConnContext, args []string) Result {
 	if len(args) != 2 {
 		return wrongArgCountError("hget")
 	}
@@ -57,7 +58,7 @@ func handleHget(connContext *ConnContext, args []string) resp.Value {
 	return stringReply(value)
 }
 
-func handleHdel(connContext *ConnContext, args []string) resp.Value {
+func handleHdel(connContext *ConnContext, args []string) Result {
 	if len(args) < 2 {
 		return wrongArgCountError("hdel")
 	}
@@ -71,7 +72,7 @@ func handleHdel(connContext *ConnContext, args []string) resp.Value {
 	if count == 0 {
 		return intReply(0)
 	}
-	record := buildBulkArray(append([]string{"HDEL", key}, fields...)...)
+	record := newMutation(append([]string{"HDEL", key}, fields...)...)
 	if err := connContext.Commit(record, func() {
 		connContext.Store.Hash.Delete(key, fields...)
 		connContext.OnKeyMutate(key)
@@ -85,7 +86,7 @@ func handleHdel(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(count))
 }
 
-func handleHgetall(connContext *ConnContext, args []string) resp.Value {
+func handleHgetall(connContext *ConnContext, args []string) Result {
 	if len(args) != 1 {
 		return wrongArgCountError("hgetall")
 	}
@@ -100,15 +101,20 @@ func handleHgetall(connContext *ConnContext, args []string) resp.Value {
 		return emptyArrayReply()
 	}
 
-	items := make([]resp.Value, 0, len(fields)*2)
-	for field, value := range fields {
+	names := make([]string, 0, len(fields))
+	for field := range fields {
+		names = append(names, field)
+	}
+	sort.Strings(names)
+	items := make([]Result, 0, len(fields)*2)
+	for _, field := range names {
 		items = append(items, stringReply(field))
-		items = append(items, stringReply(value))
+		items = append(items, stringReply(fields[field]))
 	}
 	return arrayReply(items)
 }
 
-func handleHexists(connContext *ConnContext, args []string) resp.Value {
+func handleHexists(connContext *ConnContext, args []string) Result {
 	if len(args) != 2 {
 		return wrongArgCountError("hexists")
 	}
@@ -124,7 +130,7 @@ func handleHexists(connContext *ConnContext, args []string) resp.Value {
 	return intReply(0)
 }
 
-func handleHlen(connContext *ConnContext, args []string) resp.Value {
+func handleHlen(connContext *ConnContext, args []string) Result {
 	if len(args) != 1 {
 		return wrongArgCountError("hlen")
 	}

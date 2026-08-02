@@ -4,20 +4,19 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
 func registerSortedSetCommands(registry *Registry) {
-	registry.Register("ZADD", handleZadd)
-	registry.Register("ZREM", handleZrem)
-	registry.Register("ZSCORE", handleZscore)
-	registry.Register("ZRANK", handleZrank)
-	registry.Register("ZCARD", handleZcard)
-	registry.Register("ZRANGE", handleZrange)
+	registry.register("ZADD", handleZadd, syntax(3, -1, validateZAddSyntax), writeCommand)
+	registry.register("ZREM", handleZrem, arguments(2, -1), writeCommand)
+	registry.register("ZSCORE", handleZscore, arguments(2, 2))
+	registry.register("ZRANK", handleZrank, arguments(2, 2))
+	registry.register("ZCARD", handleZcard, arguments(1, 1))
+	registry.register("ZRANGE", handleZrange, arguments(3, 3))
 }
 
-func handleZadd(connContext *ConnContext, args []string) resp.Value {
+func handleZadd(connContext *ConnContext, args []string) Result {
 	if len(args) < 3 || len(args)%2 == 0 {
 		return wrongArgCountError("zadd")
 	}
@@ -43,7 +42,7 @@ func handleZadd(connContext *ConnContext, args []string) resp.Value {
 	if !connContext.Store.SortedSet.WouldChange(key, items...) {
 		return intReply(int64(count))
 	}
-	record := buildBulkArray(append([]string{"ZADD"}, extractStrings(args)...)...)
+	record := newMutation(append([]string{"ZADD"}, extractStrings(args)...)...)
 	if err := connContext.Commit(record, func() {
 		connContext.Store.PrepareWrite(key, store.KeyTypeSortedSet, false)
 		connContext.Store.SortedSet.Add(key, items...)
@@ -54,7 +53,7 @@ func handleZadd(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(count))
 }
 
-func handleZrem(connContext *ConnContext, args []string) resp.Value {
+func handleZrem(connContext *ConnContext, args []string) Result {
 	if len(args) < 2 {
 		return wrongArgCountError("zrem")
 	}
@@ -68,7 +67,7 @@ func handleZrem(connContext *ConnContext, args []string) resp.Value {
 	if count == 0 {
 		return intReply(0)
 	}
-	record := buildBulkArray(append([]string{"ZREM"}, extractStrings(args)...)...)
+	record := newMutation(append([]string{"ZREM"}, extractStrings(args)...)...)
 	if err := connContext.Commit(record, func() {
 		connContext.Store.SortedSet.Remove(key, members...)
 		connContext.OnKeyMutate(key)
@@ -81,7 +80,7 @@ func handleZrem(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(count))
 }
 
-func handleZscore(connContext *ConnContext, args []string) resp.Value {
+func handleZscore(connContext *ConnContext, args []string) Result {
 	if len(args) != 2 {
 		return wrongArgCountError("zscore")
 	}
@@ -98,7 +97,7 @@ func handleZscore(connContext *ConnContext, args []string) resp.Value {
 	return stringReply(strconv.FormatFloat(score, 'f', -1, 64))
 }
 
-func handleZrank(connContext *ConnContext, args []string) resp.Value {
+func handleZrank(connContext *ConnContext, args []string) Result {
 	if len(args) != 2 {
 		return wrongArgCountError("zrank")
 	}
@@ -115,7 +114,7 @@ func handleZrank(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(rank))
 }
 
-func handleZcard(connContext *ConnContext, args []string) resp.Value {
+func handleZcard(connContext *ConnContext, args []string) Result {
 	if len(args) != 1 {
 		return wrongArgCountError("zcard")
 	}
@@ -128,7 +127,7 @@ func handleZcard(connContext *ConnContext, args []string) resp.Value {
 	return intReply(int64(connContext.Store.SortedSet.Cardinality(key)))
 }
 
-func handleZrange(connContext *ConnContext, args []string) resp.Value {
+func handleZrange(connContext *ConnContext, args []string) Result {
 	if len(args) != 3 {
 		return wrongArgCountError("zrange")
 	}

@@ -2,24 +2,23 @@ package engine
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
-type Handler func(connContext *ConnContext, args []string) resp.Value
+type Handler func(connContext *ConnContext, args []string) Result
 
 type WALAppender interface {
-	Append(value resp.Value) error
+	Append(command mutation.Command) error
 }
 
 type WALBatchAppender interface {
-	AppendBatch(values []resp.Value) error
+	AppendBatch(batch mutation.Batch) error
 }
 
 type WALRewriter interface {
@@ -32,11 +31,10 @@ type WALOffsetter interface {
 
 type Replicator interface {
 	ActiveReplicas() []string
-	HandlePSYNC(connection net.Conn, replicaAddress, replicaID string, offset int64, getSnapshot func() store.LogicalSnapshot) error
+	HandlePSYNC(connection net.Conn, replicaAddress, replicaID string, offset int64, getSnapshot func() (store.LogicalSnapshot, error)) error
 	Info() string
 	IsReplica() bool
-	Propagate(data []byte)
-	PropagateBatch(data []byte)
+	Propagate(batch mutation.Batch)
 }
 
 type SystemConfig struct {
@@ -81,7 +79,7 @@ func NewContext(database *store.Store, log WALAppender, replicationManager Repli
 
 func (ctx *Context) keyExpired(key string) {
 	ctx.watches.notify(key)
-	ctx.propagate(buildBulkArray("DEL", key))
+	ctx.propagate(mutation.Batch{mutation.New("DEL", key)})
 }
 
 func (ctx *Context) ConnectionOpened() {
@@ -110,29 +108,28 @@ func (ctx *Context) OnKeyRead(key string) {
 	ctx.Store.Eviction.RecordAccess(key)
 }
 
-func (ctx *Context) Commit(value resp.Value, apply func()) error {
-	if err := ctx.appendWAL(value); err != nil {
+func (ctx *Context) Commit(command mutation.Command, apply func()) error {
+	batch := mutation.Batch{command}
+	if err := ctx.appendWAL(batch); err != nil {
 		ctx.persistenceFailed.Store(true)
 		return err
 	}
 	apply()
-	ctx.propagate(value)
+	ctx.propagate(batch)
 	return ctx.evictIfNeeded()
 }
 
-func (ctx *Context) CommitBatch(values []resp.Value, apply func()) error {
-	if len(values) == 0 {
+func (ctx *Context) CommitBatch(batch mutation.Batch, apply func()) error {
+	if len(batch) == 0 {
 		apply()
 		return nil
 	}
-	if err := ctx.appendWALBatch(values); err != nil {
+	if err := ctx.appendWAL(batch); err != nil {
 		ctx.persistenceFailed.Store(true)
 		return err
 	}
 	apply()
-	if ctx.Replication != nil {
-		ctx.Replication.PropagateBatch([]byte(resp.Encode(resp.Value{Type: resp.TypeArray, Array: values})))
-	}
+	ctx.propagate(batch)
 	return nil
 }
 
@@ -142,44 +139,34 @@ func (ctx *Context) evictIfNeeded() error {
 		if key == "" {
 			break
 		}
-		ctx.watches.notify(key)
-		value := buildBulkArray("DEL", key)
-		if err := ctx.appendWAL(value); err != nil {
+		batch := mutation.Batch{mutation.New("DEL", key)}
+		if err := ctx.appendWAL(batch); err != nil {
 			ctx.persistenceFailed.Store(true)
 			return err
 		}
 		ctx.Store.DeleteKey(key)
 		ctx.watches.notify(key)
-		ctx.propagate(value)
+		ctx.propagate(batch)
 	}
 	return nil
 }
 
-func (ctx *Context) appendWAL(value resp.Value) error {
-	if ctx.WAL != nil {
-		if err := ctx.WAL.Append(value); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (ctx *Context) appendWALBatch(values []resp.Value) error {
+func (ctx *Context) appendWAL(batch mutation.Batch) error {
 	if ctx.WAL == nil {
 		return nil
 	}
 	if batchAppender, ok := ctx.WAL.(WALBatchAppender); ok {
-		return batchAppender.AppendBatch(values)
+		return batchAppender.AppendBatch(batch)
 	}
-	if len(values) == 1 {
-		return ctx.WAL.Append(values[0])
+	if len(batch) == 1 {
+		return ctx.WAL.Append(batch[0])
 	}
 	return fmt.Errorf("WAL does not support atomic batches")
 }
 
-func (ctx *Context) propagate(value resp.Value) {
+func (ctx *Context) propagate(batch mutation.Batch) {
 	if ctx.Replication != nil {
-		ctx.Replication.Propagate([]byte(resp.Encode(value)))
+		ctx.Replication.Propagate(batch)
 	}
 }
 
@@ -208,11 +195,20 @@ func (ctx *Context) RestoreSnapshot(state store.LogicalSnapshot) error {
 }
 
 type Registry struct {
-	handlers map[string]Handler
+	commands map[string]registeredCommand
 }
 
+type registeredCommand struct {
+	handler            Handler
+	syntax             commandSpec
+	write              bool
+	transactionControl bool
+}
+
+type commandOption func(*registeredCommand)
+
 func NewRegistry() *Registry {
-	registry := &Registry{handlers: make(map[string]Handler)}
+	registry := &Registry{commands: make(map[string]registeredCommand)}
 	registerStringCommands(registry)
 	registerListCommands(registry)
 	registerHashCommands(registry)
@@ -225,48 +221,32 @@ func NewRegistry() *Registry {
 }
 
 func (registry *Registry) Register(name string, handler Handler) {
-	registry.handlers[strings.ToUpper(name)] = handler
+	registry.register(name, handler)
+}
+
+func (registry *Registry) register(name string, handler Handler, options ...commandOption) {
+	command := registeredCommand{handler: handler, syntax: commandSpec{maxArgs: -1}}
+	for _, option := range options {
+		option(&command)
+	}
+	registry.commands[strings.ToUpper(name)] = command
 }
 
 func (registry *Registry) Lookup(name string) (Handler, bool) {
-	handler, ok := registry.handlers[strings.ToUpper(name)]
-	return handler, ok
+	command, ok := registry.commands[strings.ToUpper(name)]
+	return command.handler, ok
 }
 
-var txPassthrough = map[string]bool{
-	"MULTI":    true,
-	"EXEC":     true,
-	"DISCARD":  true,
-	"WATCH":    true,
-	"UNWATCH":  true,
-	"QUIT":     true,
-	"PSYNC":    true,
-	"REPLCONF": true,
-	"RAFT":     true,
+func (registry *Registry) command(name string) (registeredCommand, bool) {
+	command, ok := registry.commands[strings.ToUpper(name)]
+	return command, ok
 }
 
-var writeCommands = map[string]bool{
-	"SET": true, "MSET": true, "SETEX": true, "SETNX": true, "PSETEX": true,
-	"GETSET": true, "GETDEL": true, "GETEX": true,
-	"DEL": true, "UNLINK": true, "RENAME": true, "RENAMENX": true,
-	"INCR": true, "INCRBY": true, "INCRBYFLOAT": true, "DECR": true, "DECRBY": true,
-	"APPEND": true, "SETRANGE": true,
-	"EXPIRE": true, "PEXPIRE": true, "EXPIREAT": true, "PEXPIREAT": true, "PERSIST": true,
-	"SADD": true, "SREM": true, "SMOVE": true, "SPOP": true,
-	"SDIFFSTORE": true, "SINTERSTORE": true, "SUNIONSTORE": true,
-	"LPUSH": true, "RPUSH": true, "LPUSHX": true, "RPUSHX": true,
-	"LPOP": true, "RPOP": true, "LSET": true, "LINSERT": true, "LREM": true, "LTRIM": true,
-	"HSET": true, "HMSET": true, "HDEL": true, "HSETNX": true,
-	"HINCRBY": true, "HINCRBYFLOAT": true,
-	"ZADD": true, "ZREM": true, "ZINCRBY": true, "ZPOPMIN": true, "ZPOPMAX": true,
-	"FLUSHDB": true, "FLUSHALL": true,
-}
-
-func Execute(connContext *ConnContext, name string, args []resp.Value) resp.Value {
+func Execute(connContext *ConnContext, name string, args []string) Result {
 	return execute(connContext, NewCommand(name, args))
 }
 
-func execute(connContext *ConnContext, command Command) resp.Value {
+func execute(connContext *ConnContext, command Command) Result {
 	if connContext.running.Load() {
 		result, err := connContext.SubmitCommand(connContext, command)
 		if err != nil {
@@ -280,36 +260,55 @@ func execute(connContext *ConnContext, command Command) resp.Value {
 	return executeOwned(connContext, command.Name, command.Args)
 }
 
-func executeOwned(connContext *ConnContext, name string, args []string) resp.Value {
-	log.Printf("[EXEC] %s %s", name, formatArgs(args))
-	if connContext.Transaction.Status == TransactionQueuing && !txPassthrough[name] {
-		if _, exists := connContext.Registry.Lookup(name); !exists || !validateCommand(name, args) {
+func executeOwned(connContext *ConnContext, name string, args []string) Result {
+	command, exists := connContext.Registry.command(name)
+	if connContext.Transaction.Status == TransactionQueuing && (!exists || !command.transactionControl) {
+		if !exists {
 			connContext.Transaction.Dirty = true
-			return errorReply("ERR invalid command syntax")
+			return errorReply("ERR unknown command '" + name + "'")
+		}
+		if validationError := validateRegisteredCommand(name, command, args); validationError != nil {
+			connContext.Transaction.Dirty = true
+			return *validationError
 		}
 		connContext.Transaction.Enqueue(name, args)
-		return resp.Value{Type: resp.TypeSimpleString, String: "QUEUED"}
+		return Result{Type: ResultSimpleString, String: "QUEUED"}
 	}
-	if connContext.Connection != nil && connContext.Replication != nil && connContext.Replication.IsReplica() && writeCommands[name] {
-		return resp.Value{Type: resp.TypeError, String: "READONLY You can't write against a read only replica."}
-	}
-	if writeCommands[name] && connContext.persistenceFailed.Load() {
-		return persistenceError()
-	}
-
-	return executeCommand(connContext, name, args)
-}
-
-func executeCommand(connContext *ConnContext, name string, args []string) resp.Value {
-	handler, exists := connContext.Registry.Lookup(name)
 	if !exists {
 		return errorReply("ERR unknown command '" + name + "'")
 	}
-	return handler(connContext, args)
+	if validationError := validateRegisteredCommand(name, command, args); validationError != nil {
+		return *validationError
+	}
+	if connContext.Connection != nil && connContext.Replication != nil && connContext.Replication.IsReplica() && command.write {
+		return Result{Type: ResultError, String: "READONLY You can't write against a read only replica."}
+	}
+	if command.write && connContext.persistenceFailed.Load() {
+		return persistenceError()
+	}
+
+	return command.handler(connContext, args)
 }
 
-func formatArgs(args []string) string {
-	parts := make([]string, len(args))
-	copy(parts, args)
-	return strings.Join(parts, " ")
+func executeCommand(connContext *ConnContext, name string, args []string) Result {
+	command, exists := connContext.Registry.command(name)
+	if !exists {
+		return errorReply("ERR unknown command '" + name + "'")
+	}
+	if validationError := validateRegisteredCommand(name, command, args); validationError != nil {
+		return *validationError
+	}
+	return command.handler(connContext, args)
+}
+
+func validateRegisteredCommand(name string, command registeredCommand, args []string) *Result {
+	if !command.syntax.validArgumentCount(args) {
+		result := wrongArgCountError(strings.ToLower(name))
+		return &result
+	}
+	if !command.syntax.valid(args) {
+		result := errorReply("ERR syntax error")
+		return &result
+	}
+	return nil
 }

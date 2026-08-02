@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
@@ -32,7 +31,7 @@ func stopTestEngine(t *testing.T, cancel context.CancelFunc, done <-chan error) 
 func TestEngineLoopCommandSnapshotAndShutdown(t *testing.T) {
 	base, cancel, done := startTestEngine(t)
 	connection := NewConnContext(base, nil)
-	if result := exec(connection, "SET", "key", "value"); result.Type != resp.TypeSimpleString {
+	if result := exec(connection, "SET", "key", "value"); result.Type != ResultSimpleString {
 		t.Fatalf("SET returned %#v", result)
 	}
 	state, err := base.Snapshot()

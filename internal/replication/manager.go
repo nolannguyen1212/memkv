@@ -5,13 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/william1nguyen/valkeydb/internal/mutation"
 	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/store"
 )
@@ -24,14 +26,11 @@ const (
 	defaultReplicaQueueCapacity = 256
 )
 
-type ApplyCommand func(string, []resp.Value) error
+type ApplyCommand func(mutation.Command) error
 type ApplySnapshot func(store.LogicalSnapshot) error
-type ApplyBatch func([]Command) error
+type ApplyBatch func(mutation.Batch) error
 
-type Command struct {
-	Name string
-	Args []resp.Value
-}
+type Command = mutation.Command
 
 type replicaConnection struct {
 	Address    string
@@ -73,6 +72,7 @@ func (replica *replicaConnection) close() {
 type ManagerConfig struct {
 	BacklogCapacity  int
 	ListeningAddress string
+	Logger           *slog.Logger
 }
 
 type Manager struct {
@@ -88,14 +88,20 @@ type Manager struct {
 	mutex             sync.RWMutex
 	propagateMutex    sync.Mutex
 	waitGroup         sync.WaitGroup
+	logger            *slog.Logger
 }
 
 func NewManager(config ManagerConfig) *Manager {
+	logger := config.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	return &Manager{
 		role:             RolePrimary,
 		primaryStreamID:  replicationID(),
 		listeningAddress: config.ListeningAddress,
 		backlog:          NewBacklog(config.BacklogCapacity),
+		logger:           logger,
 	}
 }
 
@@ -134,12 +140,8 @@ func (manager *Manager) SetReplaying(replaying bool) {
 	manager.replaying.Store(replaying)
 }
 
-func (manager *Manager) Propagate(data []byte) {
-	manager.propagate(data)
-}
-
-func (manager *Manager) PropagateBatch(data []byte) {
-	manager.propagate(data)
+func (manager *Manager) Propagate(batch mutation.Batch) {
+	manager.propagate(encodeMutationBatch(batch))
 }
 
 func (manager *Manager) propagate(data []byte) {
@@ -153,12 +155,28 @@ func (manager *Manager) propagate(data []byte) {
 	manager.backlog.Write(data)
 	replicas := manager.replicaSnapshot()
 
-	log.Printf("replication: propagate to %d replica(s): %s", len(replicas), strings.TrimRight(string(data), "\r\n"))
+	manager.logger.Debug("replication propagated", "replicas", len(replicas), "bytes", len(data))
 	for _, replica := range replicas {
 		if !replica.enqueue(data) {
 			manager.removeReplica(replica)
 		}
 	}
+}
+
+func encodeMutationBatch(batch mutation.Batch) []byte {
+	values := make([]resp.Value, len(batch))
+	for index, command := range batch {
+		items := make([]resp.Value, len(command.Args)+1)
+		items[0] = resp.Value{Type: resp.TypeBulkString, String: command.Name}
+		for argumentIndex, argument := range command.Args {
+			items[argumentIndex+1] = resp.Value{Type: resp.TypeBulkString, String: argument}
+		}
+		values[index] = resp.Value{Type: resp.TypeArray, Array: items}
+	}
+	if len(values) == 1 {
+		return []byte(resp.Encode(values[0]))
+	}
+	return []byte(resp.Encode(resp.Value{Type: resp.TypeArray, Array: values}))
 }
 
 func (manager *Manager) replicaSnapshot() []*replicaConnection {
