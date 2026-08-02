@@ -10,8 +10,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
 type Role int32
@@ -19,20 +21,53 @@ type Role int32
 const (
 	RolePrimary Role = iota
 	RoleReplica
+	defaultReplicaQueueCapacity = 256
 )
 
 type ApplyCommand func(string, []resp.Value) error
+type ApplySnapshot func(store.LogicalSnapshot) error
+type ApplyBatch func([]Command) error
+
+type Command struct {
+	Name string
+	Args []resp.Value
+}
 
 type replicaConnection struct {
 	Address    string
 	Connection net.Conn
-	mutex      sync.Mutex
+	queue      chan []byte
+	done       chan struct{}
+	closeOnce  sync.Once
 }
 
-func (replica *replicaConnection) send(data []byte) error {
-	replica.mutex.Lock()
-	defer replica.mutex.Unlock()
-	return writeAll(replica.Connection, data)
+func newReplicaConnection(address string, connection net.Conn) *replicaConnection {
+	return &replicaConnection{
+		Address:    address,
+		Connection: connection,
+		queue:      make(chan []byte, defaultReplicaQueueCapacity),
+		done:       make(chan struct{}),
+	}
+}
+
+func (replica *replicaConnection) enqueue(data []byte) bool {
+	copyOfData := append([]byte(nil), data...)
+	select {
+	case replica.queue <- copyOfData:
+		return true
+	case <-replica.done:
+		return false
+	default:
+		return false
+	}
+
+}
+
+func (replica *replicaConnection) close() {
+	replica.closeOnce.Do(func() {
+		close(replica.done)
+		_ = replica.Connection.Close()
+	})
 }
 
 type ManagerConfig struct {
@@ -58,18 +93,18 @@ type Manager struct {
 func NewManager(config ManagerConfig) *Manager {
 	return &Manager{
 		role:             RolePrimary,
-		primaryStreamID:  mustGenerateReplicationID(),
+		primaryStreamID:  replicationID(),
 		listeningAddress: config.ListeningAddress,
 		backlog:          NewBacklog(config.BacklogCapacity),
 	}
 }
 
-func mustGenerateReplicationID() string {
-	bytes := make([]byte, 20)
-	if _, err := rand.Read(bytes); err != nil {
-		panic(fmt.Sprintf("generate replication ID: %v", err))
+func replicationID() string {
+	value := make([]byte, 20)
+	if _, err := rand.Read(value); err == nil {
+		return hex.EncodeToString(value)
 	}
-	return hex.EncodeToString(bytes)
+	return hex.EncodeToString([]byte(fmt.Sprintf("%020d", time.Now().UnixNano())))
 }
 
 func (manager *Manager) Close() error {
@@ -89,9 +124,7 @@ func (manager *Manager) Close() error {
 		firstErr = primaryConnection.Close()
 	}
 	for _, replica := range replicas {
-		if err := replica.Connection.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		replica.close()
 	}
 	manager.waitGroup.Wait()
 	return firstErr
@@ -102,6 +135,14 @@ func (manager *Manager) SetReplaying(replaying bool) {
 }
 
 func (manager *Manager) Propagate(data []byte) {
+	manager.propagate(data)
+}
+
+func (manager *Manager) PropagateBatch(data []byte) {
+	manager.propagate(data)
+}
+
+func (manager *Manager) propagate(data []byte) {
 	if !manager.IsPrimary() || manager.replaying.Load() {
 		return
 	}
@@ -114,7 +155,7 @@ func (manager *Manager) Propagate(data []byte) {
 
 	log.Printf("replication: propagate to %d replica(s): %s", len(replicas), strings.TrimRight(string(data), "\r\n"))
 	for _, replica := range replicas {
-		if err := replica.send(data); err != nil {
+		if !replica.enqueue(data) {
 			manager.removeReplica(replica)
 		}
 	}
@@ -134,13 +175,14 @@ func (manager *Manager) addReplica(replica *replicaConnection) {
 
 func (manager *Manager) removeReplica(target *replicaConnection) {
 	manager.mutex.Lock()
-	defer manager.mutex.Unlock()
 	for index, replica := range manager.replicas {
 		if replica == target {
 			manager.replicas = append(manager.replicas[:index], manager.replicas[index+1:]...)
-			return
+			break
 		}
 	}
+	manager.mutex.Unlock()
+	target.close()
 }
 
 func (manager *Manager) ActiveReplicas() []string {
@@ -159,7 +201,7 @@ func (manager *Manager) activeReplicasLocked() []string {
 	return addresses
 }
 
-func (manager *Manager) StartReplica(parent context.Context, address, username, password string, apply ApplyCommand) {
+func (manager *Manager) StartReplica(parent context.Context, address, username, password string, apply ApplyCommand, applyBatch ApplyBatch, restore ApplySnapshot) {
 	ctx, cancel := context.WithCancel(parent)
 
 	manager.mutex.Lock()
@@ -169,7 +211,7 @@ func (manager *Manager) StartReplica(parent context.Context, address, username, 
 	manager.mutex.Unlock()
 
 	manager.waitGroup.Go(func() {
-		manager.reconnectLoop(ctx, address, username, password, apply)
+		manager.reconnectLoop(ctx, address, username, password, apply, applyBatch, restore)
 	})
 }
 

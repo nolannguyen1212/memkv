@@ -5,16 +5,16 @@ import (
 	"io"
 	"log"
 	"net"
+
+	"github.com/william1nguyen/valkeydb/internal/snapshot"
+	"github.com/william1nguyen/valkeydb/internal/store"
 )
 
-func (manager *Manager) HandlePSYNC(connection net.Conn, replicaAddress, replicationID string, offset int64, getSnapshot func() []byte) error {
+func (manager *Manager) HandlePSYNC(connection net.Conn, replicaAddress, replicationID string, offset int64, getSnapshot func() store.LogicalSnapshot) error {
 	manager.propagateMutex.Lock()
 	defer manager.propagateMutex.Unlock()
 
-	replica := &replicaConnection{
-		Address:    replicaAddress,
-		Connection: connection,
-	}
+	replica := newReplicaConnection(replicaAddress, connection)
 
 	manager.mutex.RLock()
 	primaryStreamID := manager.primaryStreamID
@@ -26,20 +26,23 @@ func (manager *Manager) HandlePSYNC(connection net.Conn, replicaAddress, replica
 	return manager.fullSync(replica, getSnapshot)
 }
 
-func (manager *Manager) fullSync(replica *replicaConnection, getSnapshot func() []byte) error {
+func (manager *Manager) fullSync(replica *replicaConnection, getSnapshot func() store.LogicalSnapshot) error {
 	manager.mutex.RLock()
 	primaryStreamID := manager.primaryStreamID
 	manager.mutex.RUnlock()
 
 	offset := manager.backlog.CurrentOffset()
-	snapshot := getSnapshot()
-	log.Printf("replication: full sync to %s, snapshot=%d bytes, offset=%d", replica.Address, len(snapshot), offset)
+	payload, err := snapshot.Encode(snapshot.Data{State: getSnapshot(), IncludedOffset: offset})
+	if err != nil {
+		return fmt.Errorf("encode snapshot: %w", err)
+	}
+	log.Printf("replication: full sync to %s, snapshot=%d bytes, offset=%d", replica.Address, len(payload), offset)
 
-	header := fmt.Sprintf("+FULLRESYNC %s %d\r\n$%d\r\n", primaryStreamID, offset, len(snapshot))
+	header := fmt.Sprintf("+FULLRESYNC %s %d\r\n$%d\r\n", primaryStreamID, offset, len(payload))
 	if err := writeAll(replica.Connection, []byte(header)); err != nil {
 		return err
 	}
-	if err := writeAll(replica.Connection, snapshot); err != nil {
+	if err := writeAll(replica.Connection, payload); err != nil {
 		return err
 	}
 	if err := writeAll(replica.Connection, []byte("\r\n")); err != nil {
@@ -75,13 +78,29 @@ func (manager *Manager) registerReplica(replica *replicaConnection) {
 	manager.waitGroup.Go(func() {
 		manager.watchReplica(replica)
 	})
+	manager.waitGroup.Go(func() {
+		manager.writeReplica(replica)
+	})
 }
 
 func (manager *Manager) watchReplica(replica *replicaConnection) {
 	_, _ = io.Copy(io.Discard, replica.Connection)
-	_ = replica.Connection.Close()
 	manager.removeReplica(replica)
 	log.Printf("replication: replica %s disconnected", replica.Address)
+}
+
+func (manager *Manager) writeReplica(replica *replicaConnection) {
+	for {
+		select {
+		case data := <-replica.queue:
+			if err := writeAll(replica.Connection, data); err != nil {
+				manager.removeReplica(replica)
+				return
+			}
+		case <-replica.done:
+			return
+		}
+	}
 }
 
 func writeAll(connection net.Conn, data []byte) error {

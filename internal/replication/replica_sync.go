@@ -8,15 +8,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/valkeydb/internal/snapshot"
 )
 
-type replicatedCommand struct {
-	name string
-	args []resp.Value
-}
-
-func (manager *Manager) synchronize(session *replicaSession, apply ApplyCommand) error {
+func (manager *Manager) synchronize(session *replicaSession, restore ApplySnapshot) error {
 	replicationID, offset := manager.syncPosition()
 	if err := session.send("PSYNC", replicationID, strconv.FormatInt(offset, 10)); err != nil {
 		return fmt.Errorf("send psync: %w", err)
@@ -37,7 +32,7 @@ func (manager *Manager) synchronize(session *replicaSession, apply ApplyCommand)
 	if err != nil {
 		return err
 	}
-	if err := receiveSnapshot(session.reader, apply); err != nil {
+	if err := receiveSnapshot(session.reader, restore); err != nil {
 		return fmt.Errorf("receive snapshot: %w", err)
 	}
 	manager.setSyncPosition(newReplicationID, newOffset)
@@ -73,24 +68,16 @@ func parseFullResync(response string) (string, int64, error) {
 	return parts[1], offset, nil
 }
 
-func receiveSnapshot(reader *bufio.Reader, apply ApplyCommand) error {
+func receiveSnapshot(reader *bufio.Reader, restore ApplySnapshot) error {
 	payload, err := readBulkPayload(reader)
 	if err != nil {
 		return err
 	}
-	commands, err := decodeCommands(payload)
+	data, err := snapshot.Decode(bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
-	if err := apply("FLUSHALL", nil); err != nil {
-		return err
-	}
-	for _, command := range commands {
-		if err := apply(command.name, command.args); err != nil {
-			return err
-		}
-	}
-	return nil
+	return restore(data.State)
 }
 
 func readBulkPayload(reader *bufio.Reader) ([]byte, error) {
@@ -117,25 +104,4 @@ func readBulkPayload(reader *bufio.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("invalid bulk trailer")
 	}
 	return payload, nil
-}
-
-func decodeCommands(payload []byte) ([]replicatedCommand, error) {
-	reader := bufio.NewReader(bytes.NewReader(payload))
-	var commands []replicatedCommand
-	for {
-		value, err := resp.Decode(reader)
-		if err == io.EOF {
-			return commands, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		if value.Type != resp.TypeArray || len(value.Array) == 0 {
-			return nil, fmt.Errorf("snapshot contains a non-command value")
-		}
-		commands = append(commands, replicatedCommand{
-			name: strings.ToUpper(value.Array[0].String),
-			args: value.Array[1:],
-		})
-	}
 }
