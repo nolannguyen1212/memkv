@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"strings"
 )
 
 type ValueType byte
@@ -22,6 +21,20 @@ const (
 	NullBulkString = "$-1\r\n"
 	NullArray      = "*-1\r\n"
 )
+
+type Limits struct {
+	MaxBulkLength  int
+	MaxArrayLength int
+	MaxDepth       int
+	MaxLineLength  int
+}
+
+var defaultLimits = Limits{
+	MaxBulkLength:  16 << 20,
+	MaxArrayLength: 1024,
+	MaxDepth:       8,
+	MaxLineLength:  64 << 10,
+}
 
 type Value struct {
 	Type   ValueType
@@ -58,6 +71,20 @@ func Encode(value Value) string {
 }
 
 func Decode(reader *bufio.Reader) (Value, error) {
+	return DecodeWithLimits(reader, defaultLimits)
+}
+
+func DecodeWithLimits(reader *bufio.Reader, limits Limits) (Value, error) {
+	if limits.MaxBulkLength <= 0 || limits.MaxArrayLength <= 0 || limits.MaxDepth <= 0 || limits.MaxLineLength <= 0 {
+		return Value{}, fmt.Errorf("RESP limits must be positive")
+	}
+	return decode(reader, limits, 0)
+}
+
+func decode(reader *bufio.Reader, limits Limits, depth int) (Value, error) {
+	if depth > limits.MaxDepth {
+		return Value{}, fmt.Errorf("RESP nesting exceeds %d", limits.MaxDepth)
+	}
 	prefix, err := reader.ReadByte()
 	if err != nil {
 		return Value{}, err
@@ -65,38 +92,38 @@ func Decode(reader *bufio.Reader) (Value, error) {
 
 	switch prefix {
 	case '+':
-		return decodeSimpleString(reader)
+		return decodeSimpleString(reader, limits)
 	case '-':
-		return decodeError(reader)
+		return decodeError(reader, limits)
 	case ':':
-		return decodeInteger(reader)
+		return decodeInteger(reader, limits)
 	case '$':
-		return decodeBulkString(reader)
+		return decodeBulkString(reader, limits)
 	case '*':
-		return decodeArray(reader)
+		return decodeArray(reader, limits, depth)
 	}
 
 	return Value{}, fmt.Errorf("unknown RESP type: %q", prefix)
 }
 
-func decodeSimpleString(reader *bufio.Reader) (Value, error) {
-	line, err := readLine(reader)
+func decodeSimpleString(reader *bufio.Reader, limits Limits) (Value, error) {
+	line, err := readLine(reader, limits.MaxLineLength)
 	if err != nil {
 		return Value{}, err
 	}
 	return Value{Type: TypeSimpleString, String: line}, nil
 }
 
-func decodeError(reader *bufio.Reader) (Value, error) {
-	line, err := readLine(reader)
+func decodeError(reader *bufio.Reader, limits Limits) (Value, error) {
+	line, err := readLine(reader, limits.MaxLineLength)
 	if err != nil {
 		return Value{}, err
 	}
 	return Value{Type: TypeError, String: line}, nil
 }
 
-func decodeInteger(reader *bufio.Reader) (Value, error) {
-	line, err := readLine(reader)
+func decodeInteger(reader *bufio.Reader, limits Limits) (Value, error) {
+	line, err := readLine(reader, limits.MaxLineLength)
 	if err != nil {
 		return Value{}, err
 	}
@@ -109,8 +136,8 @@ func decodeInteger(reader *bufio.Reader) (Value, error) {
 	return Value{Type: TypeInteger, Number: number}, nil
 }
 
-func decodeBulkString(reader *bufio.Reader) (Value, error) {
-	line, err := readLine(reader)
+func decodeBulkString(reader *bufio.Reader, limits Limits) (Value, error) {
+	line, err := readLine(reader, limits.MaxLineLength)
 	if err != nil {
 		return Value{}, err
 	}
@@ -123,17 +150,26 @@ func decodeBulkString(reader *bufio.Reader) (Value, error) {
 	if length == -1 {
 		return Value{Type: TypeBulkString, IsNull: true}, nil
 	}
+	if length < -1 {
+		return Value{}, fmt.Errorf("invalid bulk length %d", length)
+	}
+	if length > limits.MaxBulkLength {
+		return Value{}, fmt.Errorf("bulk length %d exceeds %d", length, limits.MaxBulkLength)
+	}
 
 	buffer := make([]byte, length+2)
 	if _, err := io.ReadFull(reader, buffer); err != nil {
 		return Value{}, err
 	}
+	if buffer[length] != '\r' || buffer[length+1] != '\n' {
+		return Value{}, fmt.Errorf("invalid bulk string trailer")
+	}
 
 	return Value{Type: TypeBulkString, String: string(buffer[:length])}, nil
 }
 
-func decodeArray(reader *bufio.Reader) (Value, error) {
-	line, err := readLine(reader)
+func decodeArray(reader *bufio.Reader, limits Limits, depth int) (Value, error) {
+	line, err := readLine(reader, limits.MaxLineLength)
 	if err != nil {
 		return Value{}, err
 	}
@@ -146,10 +182,16 @@ func decodeArray(reader *bufio.Reader) (Value, error) {
 	if count == -1 {
 		return Value{Type: TypeArray, IsNull: true}, nil
 	}
+	if count < -1 {
+		return Value{}, fmt.Errorf("invalid array length %d", count)
+	}
+	if count > limits.MaxArrayLength {
+		return Value{}, fmt.Errorf("array length %d exceeds %d", count, limits.MaxArrayLength)
+	}
 
 	array := make([]Value, 0, count)
 	for i := 0; i < count; i++ {
-		item, err := Decode(reader)
+		item, err := decode(reader, limits, depth+1)
 		if err != nil {
 			return Value{}, err
 		}
@@ -159,10 +201,24 @@ func decodeArray(reader *bufio.Reader) (Value, error) {
 	return Value{Type: TypeArray, Array: array}, nil
 }
 
-func readLine(reader *bufio.Reader) (string, error) {
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
+func readLine(reader *bufio.Reader, limit int) (string, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > limit+2 {
+			return "", fmt.Errorf("RESP line exceeds %d", limit)
+		}
+		line = append(line, fragment...)
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		break
 	}
-	return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), nil
+	if len(line) < 2 || line[len(line)-2] != '\r' || line[len(line)-1] != '\n' {
+		return "", fmt.Errorf("invalid RESP line ending")
+	}
+	return string(line[:len(line)-2]), nil
 }
