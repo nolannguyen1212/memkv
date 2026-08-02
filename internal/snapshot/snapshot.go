@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -37,10 +38,42 @@ type Data struct {
 type File struct {
 	mutex   sync.Mutex
 	enabled bool
+	files   fileSystem
+}
+
+type syncedFile interface {
+	io.Writer
+	Sync() error
+	Close() error
+}
+
+type fileSystem interface {
+	Open(string) (syncedFile, error)
+	Rename(string, string) error
+	Remove(string) error
+	SyncDirectory(string) error
+}
+
+type osFileSystem struct{}
+
+func (osFileSystem) Open(path string) (syncedFile, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, filePerm)
+}
+
+func (osFileSystem) Rename(oldPath, newPath string) error {
+	return os.Rename(oldPath, newPath)
+}
+
+func (osFileSystem) Remove(path string) error {
+	return os.Remove(path)
+}
+
+func (osFileSystem) SyncDirectory(path string) error {
+	return syncDirectory(path)
 }
 
 func New(enabled bool) *File {
-	return &File{enabled: enabled}
+	return &File{enabled: enabled, files: osFileSystem{}}
 }
 
 func Encode(data Data) ([]byte, error) {
@@ -121,22 +154,25 @@ func (file *File) Save(data Data, path string) error {
 	defer file.mutex.Unlock()
 
 	temp := path + tempSuffix
-	defer func() { _ = os.Remove(temp) }()
-	handle, err := os.OpenFile(temp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, filePerm)
+	defer removeTemporaryFile(file.files, temp)
+	handle, err := file.files.Open(temp)
 	if err != nil {
 		return err
 	}
 	if err := writeAndSync(handle, encoded); err != nil {
-		_ = handle.Close()
-		return err
+		return errors.Join(err, handle.Close())
 	}
 	if err := handle.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(temp, path); err != nil {
+	if err := file.files.Rename(temp, path); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(path))
+	return file.files.SyncDirectory(filepath.Dir(path))
+}
+
+func removeTemporaryFile(files fileSystem, path string) {
+	_ = files.Remove(path)
 }
 
 func (file *File) Load(path string) (*Data, error) {
@@ -154,15 +190,15 @@ func (file *File) Load(path string) (*Data, error) {
 		}
 		return nil, err
 	}
-	defer func() { _ = handle.Close() }()
-	return Decode(handle)
+	data, decodeErr := Decode(handle)
+	return data, errors.Join(decodeErr, handle.Close())
 }
 
 func (file *File) Close() error {
 	return nil
 }
 
-func writeAndSync(file *os.File, data []byte) error {
+func writeAndSync(file syncedFile, data []byte) error {
 	for len(data) > 0 {
 		written, err := file.Write(data)
 		if err != nil {
@@ -181,6 +217,8 @@ func syncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = directory.Close() }()
-	return directory.Sync()
+	if err := directory.Sync(); err != nil {
+		return errors.Join(err, directory.Close())
+	}
+	return directory.Close()
 }
