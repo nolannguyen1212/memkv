@@ -1,145 +1,146 @@
-# ValkeyDB
+# MemKV
 
-A Redis-inspired learning database built from scratch in Go.
+MemKV explores how a storage server orders concurrent requests, maintains typed state, commits durable mutations, expires keys, executes optimistic transactions, and synchronizes asynchronous replicas.
 
-## Key Features
+Its wire protocol is a bounded RESP2 subset covering simple strings, errors, integers, bulk strings, and arrays.
 
-- **RESP2 Protocol**: Supports redis-cli and Redis clients for the implemented command set
-- **Multiple Data Structures**:
-  - Dictionary (String key-value pairs)
-  - Sets (Unique collections)
-  - Lists (Deque semantics)
-  - Hashes (Field-value maps)
-  - Sorted Sets (Score map with deterministic sorted slice ordering)
-- **Capacity Control**: Optional deterministic FIFO eviction by maximum key count
-- **Persistence**: WAL and versioned, checksummed snapshots
-- **Commit Model**: Canonical mutation batches shared by runtime commits, WAL, and replication
-- **TTL Support**: Automatic key expiration
-- **Execution Model**: A bounded, single-owner engine loop orders commands, transactions, expiration, snapshots, and recovery events
+## Architecture
 
-## System Architecture
+```mermaid
+flowchart LR
+    Client[RESP client] --> TCP[TCP server]
+    TCP --> RESP[RESP2 codec]
+    RESP --> Queue[Bounded request queue]
+    Queue --> Engine[Single-owner engine]
 
-![ValkeyDB system architecture](assets/valkeydb-architecture.png)
-
-## Getting Started
-
-```bash
-git clone https://github.com/william1nguyen/valkeydb.git
-cd valkeydb
-make build
-make run
+    Engine --> Store[Typed in-memory store]
+    Engine --> WAL[Checksummed WAL]
+    Engine --> Snapshot[Versioned snapshot]
+    Engine --> Replication[Replication manager]
+    Replication --> Backlog[In-memory backlog]
+    Replication --> Replicas[Replica processes]
 ```
 
-Connect with redis-cli:
+### Single-Owner Execution Model
 
-```bash
-redis-cli -p 6379
-127.0.0.1:6379> PING
-PONG
-127.0.0.1:6379> SET mykey "Hello"
-OK
-127.0.0.1:6379> GET mykey
-"Hello"
-```
+Each client connection has its own TCP goroutine for RESP decoding and response encoding. Parsed commands enter a bounded queue. One engine goroutine owns command execution and orders writes, reads, transactions, expiration maintenance, snapshots, and replication snapshot capture.
 
-## Supported Commands
+The store does not require locks on its command path because it has one runtime owner. This is a single-owner execution model, not a single OS thread: networking, WAL coordination, and replication I/O still run concurrently. A slow command delays commands behind it, and a full request queue applies backpressure to client goroutines.
 
-| Category    | Commands                                              |
-| ----------- | ----------------------------------------------------- |
-| String      | SET, GET, DEL, TTL, EXPIRE, PING                      |
-| Sorted Set  | ZADD, ZREM, ZSCORE, ZRANK, ZCARD, ZRANGE              |
-| Set         | SADD, SREM, SCARD, SMEMBERS, SISMEMBER                 |
-| List        | LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE                 |
-| Hash        | HSET, HGET, HDEL, HGETALL, HEXISTS, HLEN              |
-| Transaction | MULTI, EXEC, DISCARD, WATCH, UNWATCH                  |
-| System      | AUTH, INFO, KEYS                                      |
+### Storage Model
 
-## Transactions
+Every key maps to one union `Entry` containing its type, payload, version, and absolute expiration deadline. Mutation invariants live in the store: a successful change advances the key version, maintains FIFO capacity metadata, removes empty collections, and notifies the engine so `WATCH` can detect conflicts.
 
-ValkeyDB supports atomic transactions via `MULTI/EXEC` with optimistic locking via `WATCH`.
+| Type       | Implementation                                  |
+| ---------- | ----------------------------------------------- |
+| String     | Scalar value                                    |
+| Set        | Hash set                                        |
+| List       | Growable circular deque                         |
+| Hash       | Field-value hash map                            |
+| Sorted set | Score map plus deterministic sorted slice       |
 
-**Basic transaction:**
+Sorted-set mutation rebuilds a sorted slice and runs in `O(n log n)`. This favors deterministic ordering and implementation clarity over large-cardinality write performance.
 
-```bash
-127.0.0.1:6379> MULTI
-OK
-127.0.0.1:6379> SET counter 1
-QUEUED
-127.0.0.1:6379> SET name "alice"
-QUEUED
-127.0.0.1:6379> EXEC
-1) OK
-2) OK
-```
+TTL is stored as an absolute timestamp. Keys expire lazily on access and actively in bounded maintenance batches. `SET EX/PX` is converted to an absolute `PXAT` mutation before persistence and replication.
 
-**Optimistic locking with WATCH:**
+Optional `memory.max_keys` uses deterministic FIFO eviction. Creating a key beyond the limit commits the write and `DEL` of the oldest key in one canonical mutation batch. Reads and updates do not change FIFO order.
 
-```bash
-127.0.0.1:6379> WATCH balance
-OK
-127.0.0.1:6379> MULTI
-OK
-127.0.0.1:6379> SET balance 100
-QUEUED
-127.0.0.1:6379> EXEC
-(nil)   # returns nil if a watched key was modified before EXEC
-```
+### Durability and Replication
 
-| Command   | Description                                                   |
-| --------- | ------------------------------------------------------------- |
-| `MULTI`   | Start a transaction block                                     |
-| `EXEC`    | Execute all queued commands atomically                        |
-| `DISCARD` | Discard all queued commands and exit the transaction          |
-| `WATCH`   | Watch keys; abort transaction if any key changes before EXEC  |
-| `UNWATCH` | Unwatch all watched keys                                      |
+WAL records are versioned, length-bounded, checksummed, and synchronized before memory is changed. If WAL append or sync fails, the mutation is not applied and later writes are rejected. On startup, an incomplete final record is truncated; corruption in the middle of the log fails recovery instead of being skipped.
 
-## Replication
+Disk snapshots use a versioned and checksummed `.vksp` format. A checkpoint stores the corresponding WAL byte offset, so recovery restores the snapshot and replays only the committed WAL suffix. Disk snapshots are currently written during graceful shutdown, not periodically.
 
-ValkeyDB follows the Redis OSS model: every primary and replica is an independent process. A replica declares its primary in its own configuration and connects automatically at startup.
+Replication is asynchronous. A primary write is acknowledged without waiting for a replica. The primary captures a logical snapshot and its replication offset for full synchronization; writes committed during transfer are handed off through the backlog without a snapshot-to-live gap. A reconnect within the backlog window uses partial synchronization. Slow replicas never block the engine: overflowing their bounded queue disconnects them.
 
-**Start primary:**
+Replicas are independent processes configured with a primary address. They intentionally disable local WAL and disk snapshots, do not support promotion, and full-sync again after process restart.
 
-```bash
-make run
-```
+### Supported Commands
 
-**Start replica:**
+| Category     | Commands                                                        |
+| ------------ | --------------------------------------------------------------- |
+| String/TTL   | `SET`, `GET`, `DEL`, `EXPIRE`, `PEXPIREAT`, `TTL`               |
+| Set          | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD`                |
+| List         | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE`              |
+| Hash         | `HSET`, `HGET`, `HDEL`, `HGETALL`, `HEXISTS`, `HLEN`            |
+| Sorted set   | `ZADD`, `ZREM`, `ZSCORE`, `ZRANK`, `ZCARD`, `ZRANGE`            |
+| Transaction  | `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH`                  |
+| Server       | `PING`, `AUTH`, `INFO`, `KEYS`, `FLUSHDB`, `FLUSHALL`           |
 
-```bash
-make replica
-# Uses config.replica.yaml by default.
-```
+ACL users, scripting, pub/sub, clustering, sharding, replica promotion, and commands outside the table are not implemented.
 
-To run more replicas, copy `config.replica.yaml` and give every process a unique `server.addr`, WAL filename, and snapshot filename. The primary neither creates replica processes nor owns a replica-count setting.
+## Data Flow
+
+### Read Flow
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant C as Redis client
+    participant C as Client
+    participant S as TCP/RESP server
+    participant E as Engine owner
+    participant M as Store
+
+    C->>S: RESP command
+    S->>E: Submit request
+    E->>M: Expire-if-needed and read
+    M-->>E: Typed result
+    E-->>S: Result
+    S-->>C: RESP response
+```
+
+Reads are ordered with writes by the same engine loop. Access first performs lazy expiration and type checking, then returns a RESP result. A wrong-type access returns an error instead of reading stale payload from another data structure.
+
+### Committed Write Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant E as Engine owner
+    participant W as WAL
+    participant M as Store
+    participant B as Backlog
+    participant R as Replicas
+
+    C->>E: Write command
+    E->>E: Validate and build canonical batch
+    E->>W: Append record and fsync
+    W-->>E: Durable
+    E->>M: Apply batch
+    E->>B: Append encoded batch
+    E->>R: Enqueue live stream
+    E-->>C: RESP result
+```
+
+The WAL sync is the durability commit point. Memory application and replication propagation happen only after it succeeds. Because the engine does not interleave another command inside a handler, clients cannot observe the write halfway through its batch. A client timeout after commit is an ambiguous result: recovery may contain a write whose response the client did not receive.
+
+`MULTI` queues validated commands. `EXEC` runs them against a cloned store, persists the resulting canonical mutations as one WAL batch, then swaps the planned state into the live store. `WATCH` aborts before execution when a watched key version changed.
+
+### Replication Flow
+
+```mermaid
+sequenceDiagram
+    participant R as Replica
     participant P as Primary
     participant B as Backlog
-    participant R as Replica
 
-    R->>P: AUTH (when configured)
-    R->>P: REPLCONF / PSYNC
-    alt Full sync
-        P->>R: Send full snapshot
-    else Partial sync
-        P->>B: Read missing commands
-        B->>R: Send backlog delta
+    R->>P: AUTH, REPLCONF, PSYNC
+    alt Offset is in backlog
+        P-->>R: CONTINUE and missing bytes
+    else Full synchronization
+        P->>P: Capture snapshot and offset
+        P-->>R: FULLRESYNC and snapshot
+        B-->>R: Writes since captured offset
     end
-    loop Live replication
-        C->>P: Write command
-        P->>B: Append command
-        P->>R: Stream command
+    loop Live asynchronous stream
+        P-->>R: Canonical mutation batches
     end
 ```
 
-On connect, the replica performs a **full sync** or **partial sync** from the backlog on reconnect. Write commands are then streamed in real time; TCP errors remove disconnected replicas and trigger reconnects.
+## Getting Started
 
-## Configuration
+### Configuration
 
-Edit `config.yaml`:
+MemKV loads a YAML file with strict unknown-field rejection:
 
 ```yaml
 server:
@@ -154,56 +155,155 @@ server:
     max_line_length: 65536
 
 replication:
-  role: "primary"       # primary or replica
-  primary_addr: ""      # required on a replica
-  username: ""          # optional; only the default user is currently supported
-  password: ""          # primary server auth password, when required
+  role: primary
+  primary_addr: ""
+  username: ""
+  password: ""
   backlog_size: 1048576
 
 persistence:
   wal:
     enabled: true
-    filename: "valkeydb.wal"
+    filename: memkv.wal
     rewrite_interval: 3600
     max_size_mb: 64
   snapshot:
     enabled: false
-    filename: "dump.vksp"
+    filename: dump.vksp
 
 datastructure:
   expiration:
     check_interval: 1
 
 memory:
-  max_keys: 5000000  # unlimited if not set
-
+  max_keys: 5000000
 ```
 
-When WAL and disk snapshots are enabled together, recovery restores the snapshot and replays the WAL suffix after its included byte offset. Automatic WAL rewrite is disabled in this mode so offsets never change underneath an existing snapshot. Full replication sync uses the same snapshot codec.
+Timeouts, rewrite intervals, and expiration intervals are in seconds; backlog size and RESP limits are in bytes/counts. Omit `memory.max_keys` for unlimited capacity.
 
-For an authenticated primary, the replica's `replication.password` must match the primary's `server.auth`. `replication.username` may be empty or `default`; custom ACL users are not implemented yet.
+For a replica, set `role: replica`, provide `primary_addr` and the primary authentication credentials, and disable both WAL and disk snapshot persistence. Only an empty username or `default` is supported.
 
-### Capacity Control
+When WAL and disk snapshots are enabled together, automatic WAL rewrite is disabled so a stored snapshot offset continues to reference the same log history.
 
-When a new key would exceed `max_keys`, the oldest inserted key is included as a `DEL` in the same committed mutation batch. Reads and updates do not change FIFO order.
+### Installation
 
-Replica processes intentionally disable local WAL and disk snapshots. They rebuild memory through full synchronization after restart and then continue with partial synchronization while their replication position remains available in memory.
+Requirements:
 
-## Docker
+- Go 1.25 or newer.
+- Make.
+- A RESP2 CLI such as `redis-cli` is optional but convenient for manual testing.
 
 ```bash
-docker build -t valkeydb:latest .
-docker run --rm -p 6379:6379 valkeydb:latest
+git clone https://github.com/william1nguyen/memkv.git
+cd memkv
+make build
 ```
 
-## Verification
+The binary is written to `bin/memkv`.
+
+### Running MemKV
+
+Start a primary with `config.yaml`:
+
+```bash
+make run
+```
+
+Connect using the password from `server.auth`:
+
+```bash
+redis-cli -p 6379 -a secretpassword --no-auth-warning
+```
+
+```text
+127.0.0.1:6379> PING
+PONG
+127.0.0.1:6379> SET greeting hello
+OK
+127.0.0.1:6379> GET greeting
+"hello"
+```
+
+Use another primary configuration:
+
+```bash
+make run CONFIG=path/to/primary.yaml
+```
+
+Start the sample replica on port `6380`:
+
+```bash
+make replica
+redis-cli -p 6380 -a secretpassword --no-auth-warning GET greeting
+```
+
+Each additional replica needs its own config and unique `server.addr`:
+
+```bash
+make replica REPLICA_CONFIG=path/to/replica.yaml
+```
+
+### Testing
+
+Run the complete unit and integration suite:
 
 ```bash
 make test
-go test -race ./...
+go test -race -count=1 ./...
 go vet ./...
-golangci-lint run ./...
+golangci-lint run
+```
+
+Run the existing fuzz targets:
+
+```bash
+go test -run '^$' -fuzz FuzzDecode -fuzztime 30s ./internal/resp
+go test -run '^$' -fuzz FuzzDecodeRecord -fuzztime 30s ./internal/wal
+go test -run '^$' -fuzz FuzzDecode -fuzztime 30s ./internal/snapshot
+go test -run '^$' -fuzz FuzzParseCommand -fuzztime 30s ./internal/server
+```
+
+The suite covers model-based deque and sorted-set behavior, engine ordering, transactions and WATCH conflicts, real TCP fragmentation and pipelining, WAL corruption and tail repair, snapshot replacement failures, replication full/partial synchronization, sync-to-live handoff, and slow-replica overflow.
+
+Process-level crash injection, differential tests against reference servers, long-running fuzzing, and goroutine leak detection remain future test milestones.
+
+### Benchmarking
+
+Run the reproducible microbenchmark baseline:
+
+```bash
 make bench
 ```
 
-The included benchmarks are reproducible correctness/performance baselines, not a high-load or tail-latency claim.
+Override repetition count and benchmark duration when comparing changes:
+
+```bash
+BENCH_COUNT=5 BENCH_TIME=2s make bench
+```
+
+The script records commit SHA, Go version, OS, and architecture, then reports `ns/op`, `B/op`, and `allocs/op` for RESP, deque, sorted set, store GET/SET/snapshot, WAL record encoding, snapshot encoding, and single-connection server GET/SET round trips.
+
+The following results are the median of three 500 ms runs on commit `40f7513`:
+
+| Benchmark                    | Time/op    | Bytes/op  | Allocs/op |
+| ---------------------------- | ---------- | --------- | --------- |
+| RESP encode                  | 187.9 ns   | 152 B     | 8         |
+| RESP decode                  | 921.8 ns   | 4,536 B   | 16        |
+| Deque push/pop               | 5.227 ns   | 0 B       | 0         |
+| Deque growth                 | 7.536 µs   | 16,320 B  | 8         |
+| Store string GET             | 14.39 ns   | 0 B       | 0         |
+| Store string SET             | 80.07 ns   | 96 B      | 1         |
+| Store snapshot, 10k keys     | 2.225 ms   | 3,089,613 B | 154     |
+| Sorted-set add, 100 members  | 7.089 µs   | 2,784 B   | 4         |
+| Sorted-set add, 1k members   | 102.0 µs   | 24,672 B  | 4         |
+| Sorted-set add, 10k members  | 1.326 ms   | 245,858 B | 4         |
+| WAL record codec             | 485.5 ns   | 560 B     | 25        |
+| Snapshot encode, 10k keys    | 2.479 ms   | 3,208,994 B | 40,068  |
+| Server GET round trip        | 3.469 µs   | 760 B     | 23        |
+| Server SET round trip        | 3.797 µs   | 1,032 B   | 26        |
+
+Environment: Go 1.26.4, darwin/arm64, Apple M1 Pro, `BENCH_COUNT=3`, and `BENCH_TIME=500ms`.
+
+The measurements expose two immediate optimization targets: snapshot encoding performs roughly 40k allocations for 10k keys, while RESP decoding allocates about 4.5 KiB per operation. Sorted-set mutation cost also grows quickly with cardinality because it rebuilds the sorted slice.
+
+These are microbenchmarks, not a high-load throughput or tail-latency claim. Multi-connection load tests and p50/p95/p99 reporting will be added after the workload and load-generation tool are defined.
