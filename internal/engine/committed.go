@@ -15,6 +15,11 @@ func (log *transactionWAL) Append(command mutation.Command) error {
 	return nil
 }
 
+func (log *transactionWAL) AppendBatch(batch mutation.Batch) error {
+	log.values = append(log.values, batch...)
+	return nil
+}
+
 func (ctx *Context) Replay(commands []QueuedCommand) error {
 	ctx.directMu.Lock()
 	defer ctx.directMu.Unlock()

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -157,6 +158,41 @@ func TestExecWALFailureDoesNotChangeLiveStore(t *testing.T) {
 
 	if _, exists := database.Dictionary.Get("new"); exists {
 		t.Fatal("failed EXEC created new key")
+	}
+}
+
+func TestExecCommitsCapacityEvictionInOneWALBatch(t *testing.T) {
+	maxKeys := 1
+	database := store.New(store.Config{MaxKeys: &maxKeys})
+	database.SetString("first", "one", time.Time{})
+	appender := &recordingAppender{}
+	conn := NewConnContext(NewContext(database, appender, nil, SystemConfig{}), nil)
+	exec(conn, "MULTI")
+	exec(conn, "SET", "second", "two")
+	result := exec(conn, "EXEC")
+
+	if result.Type != ResultArray || len(result.Array) != 1 {
+		t.Fatalf("EXEC returned %#v", result)
+	}
+
+	if result.Array[0].Type != ResultSimpleString {
+		t.Fatalf("SET result = %#v, want simple string", result.Array[0])
+	}
+
+	if appender.batches != 1 {
+		t.Fatalf("WAL batches = %d, want 1", appender.batches)
+	}
+
+	if names := appender.commandNames(); !reflect.DeepEqual(names, []string{"SET", "DEL"}) {
+		t.Fatalf("WAL commands = %v, want [SET DEL]", names)
+	}
+
+	if _, exists := database.Dictionary.Get("first"); exists {
+		t.Fatal("eviction victim still exists")
+	}
+
+	if value, exists := database.Dictionary.Get("second"); !exists || value != "two" {
+		t.Fatalf("second value = %q, exists = %v", value, exists)
 	}
 }
 
