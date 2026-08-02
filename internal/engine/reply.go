@@ -46,10 +46,6 @@ func notIntegerError() resp.Value {
 	return errorReply("ERR value is not an integer or out of range")
 }
 
-func syntaxError() resp.Value {
-	return errorReply("ERR syntax error")
-}
-
 func wrongTypeError() resp.Value {
 	return errorReply("WRONGTYPE Operation against a key holding the wrong kind of value")
 }

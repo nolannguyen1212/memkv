@@ -120,8 +120,6 @@ func handleScard(connContext *ConnContext, args []string) resp.Value {
 
 func extractStrings(args []string) []string {
 	result := make([]string, len(args))
-	for i, arg := range args {
-		result[i] = arg
-	}
+	copy(result, args)
 	return result
 }

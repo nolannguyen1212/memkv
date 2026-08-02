@@ -84,8 +84,5 @@ func validateSetSyntax(args []string) bool {
 }
 
 func validateZAddSyntax(args []string) bool {
-	if len(args)%2 == 0 {
-		return false
-	}
-	return true
+	return len(args)%2 != 0
 }

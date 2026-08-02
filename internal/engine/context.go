@@ -310,8 +310,6 @@ func executeCommand(connContext *ConnContext, name string, args []string) resp.V
 
 func formatArgs(args []string) string {
 	parts := make([]string, len(args))
-	for i, a := range args {
-		parts[i] = a
-	}
+	copy(parts, args)
 	return strings.Join(parts, " ")
 }
