@@ -1,12 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/william1nguyen/valkeydb/internal/resp"
 	"gopkg.in/yaml.v3"
 )
 
@@ -16,14 +18,21 @@ type Config struct {
 	Persistence   PersistenceConfig   `yaml:"persistence"`
 	Datastructure DatastructureConfig `yaml:"datastructure"`
 	Memory        MemoryConfig        `yaml:"memory"`
-	Logging       LoggingConfig       `yaml:"logging"`
 }
 
 type ServerConfig struct {
-	Address      string `yaml:"addr"`
-	ReadTimeout  int    `yaml:"read_timeout"`
-	WriteTimeout int    `yaml:"write_timeout"`
-	Auth         string `yaml:"auth"`
+	Address      string     `yaml:"addr"`
+	ReadTimeout  int        `yaml:"read_timeout"`
+	WriteTimeout int        `yaml:"write_timeout"`
+	Auth         string     `yaml:"auth"`
+	RESP         RESPConfig `yaml:"resp"`
+}
+
+type RESPConfig struct {
+	MaxBulkLength  int `yaml:"max_bulk_length"`
+	MaxArrayLength int `yaml:"max_array_length"`
+	MaxDepth       int `yaml:"max_depth"`
+	MaxLineLength  int `yaml:"max_line_length"`
 }
 
 type ReplicationConfig struct {
@@ -64,11 +73,6 @@ type MemoryConfig struct {
 	EvictStrategy string `yaml:"evict_strategy"`
 }
 
-type LoggingConfig struct {
-	Level              string `yaml:"level"`
-	VerbosePersistence bool   `yaml:"verbose_persistence"`
-}
-
 func LoadConfig(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -76,7 +80,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config %q: %w", path, err)
 	}
 	if err := cfg.Validate(); err != nil {
@@ -91,6 +97,10 @@ func (c Config) Validate() error {
 	}
 	if c.Server.ReadTimeout <= 0 || c.Server.WriteTimeout <= 0 {
 		return fmt.Errorf("server timeouts must be positive")
+	}
+	limits := c.RESPLimits()
+	if limits.MaxBulkLength <= 0 || limits.MaxArrayLength <= 0 || limits.MaxDepth <= 0 || limits.MaxLineLength <= 0 {
+		return fmt.Errorf("server.resp limits must be positive")
 	}
 	if c.Replication.BacklogSize <= 0 {
 		return fmt.Errorf("replication.backlog_size must be positive")
@@ -113,14 +123,19 @@ func (c Config) Validate() error {
 	if c.Datastructure.Expiration.CheckInterval <= 0 {
 		return fmt.Errorf("datastructure.expiration.check_interval must be positive")
 	}
-	if c.Persistence.WAL.Enabled && strings.TrimSpace(c.Persistence.WAL.Filename) == "" {
-		return fmt.Errorf("persistence.wal.filename is required when WAL is enabled")
+	if c.Persistence.WAL.Enabled {
+		if strings.TrimSpace(c.Persistence.WAL.Filename) == "" {
+			return fmt.Errorf("persistence.wal.filename is required when WAL is enabled")
+		}
+		if c.Persistence.WAL.RewriteInterval <= 0 {
+			return fmt.Errorf("persistence.wal.rewrite_interval must be positive when WAL is enabled")
+		}
+		if c.Persistence.WAL.MaxSizeMB < 0 {
+			return fmt.Errorf("persistence.wal.max_size_mb cannot be negative")
+		}
 	}
 	if c.Persistence.Snapshot.Enabled && strings.TrimSpace(c.Persistence.Snapshot.Filename) == "" {
 		return fmt.Errorf("persistence.snapshot.filename is required when snapshot is enabled")
-	}
-	if c.Persistence.WAL.RewriteInterval <= 0 {
-		return fmt.Errorf("persistence.wal.rewrite_interval must be positive")
 	}
 	if c.Memory.KeyLimit != nil && *c.Memory.KeyLimit <= 0 {
 		return fmt.Errorf("memory.key_limit must be positive when set")
@@ -131,6 +146,23 @@ func (c Config) Validate() error {
 		return fmt.Errorf("memory.evict_strategy %q is not supported", c.Memory.EvictStrategy)
 	}
 	return nil
+}
+
+func (c Config) RESPLimits() resp.Limits {
+	limits := resp.DefaultLimits()
+	if c.Server.RESP.MaxBulkLength != 0 {
+		limits.MaxBulkLength = c.Server.RESP.MaxBulkLength
+	}
+	if c.Server.RESP.MaxArrayLength != 0 {
+		limits.MaxArrayLength = c.Server.RESP.MaxArrayLength
+	}
+	if c.Server.RESP.MaxDepth != 0 {
+		limits.MaxDepth = c.Server.RESP.MaxDepth
+	}
+	if c.Server.RESP.MaxLineLength != 0 {
+		limits.MaxLineLength = c.Server.RESP.MaxLineLength
+	}
+	return limits
 }
 
 func (c Config) ReadTimeout() time.Duration {

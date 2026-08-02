@@ -43,6 +43,39 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	contents := []byte(`
+server: {addr: ":0", read_timeout: 1, write_timeout: 1, write_timout: 1}
+replication: {role: "primary", backlog_size: 1024}
+persistence: {wal: {enabled: false}}
+datastructure: {expiration: {check_interval: 1}}
+`)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.LoadConfig(path); err == nil {
+		t.Fatal("LoadConfig() accepted an unknown field")
+	}
+}
+
+func TestValidateDoesNotRequireRewritePolicyWhenWALIsDisabled(t *testing.T) {
+	cfg := validConfig()
+	cfg.Persistence.WAL.RewriteInterval = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestRESPConfigOverridesDefaults(t *testing.T) {
+	cfg := validConfig()
+	cfg.Server.RESP = app.RESPConfig{MaxBulkLength: 1024, MaxArrayLength: 16, MaxDepth: 4, MaxLineLength: 128}
+	limits := cfg.RESPLimits()
+	if limits.MaxBulkLength != 1024 || limits.MaxArrayLength != 16 || limits.MaxDepth != 4 || limits.MaxLineLength != 128 {
+		t.Fatalf("RESP limits = %#v", limits)
+	}
+}
+
 func TestValidateAcceptsReplicaConfig(t *testing.T) {
 	cfg := validConfig()
 	cfg.Replication.Role = "replica"

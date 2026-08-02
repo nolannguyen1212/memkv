@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 )
 
 type ValueType byte
@@ -36,6 +37,10 @@ var defaultLimits = Limits{
 	MaxLineLength:  64 << 10,
 }
 
+func DefaultLimits() Limits {
+	return defaultLimits
+}
+
 type Value struct {
 	Type   ValueType
 	String string
@@ -45,29 +50,52 @@ type Value struct {
 }
 
 func Encode(value Value) string {
+	var encoded strings.Builder
+	encode(&encoded, value)
+	return encoded.String()
+}
+
+func encode(encoded *strings.Builder, value Value) {
 	switch value.Type {
 	case TypeSimpleString:
-		return fmt.Sprintf("+%s\r\n", value.String)
+		encoded.WriteByte('+')
+		encoded.WriteString(value.String)
+		encoded.WriteString("\r\n")
 	case TypeError:
-		return fmt.Sprintf("-%s\r\n", value.String)
+		encoded.WriteByte('-')
+		encoded.WriteString(value.String)
+		encoded.WriteString("\r\n")
 	case TypeInteger:
-		return fmt.Sprintf(":%d\r\n", value.Number)
+		encoded.WriteByte(':')
+		writeInt(encoded, value.Number)
+		encoded.WriteString("\r\n")
 	case TypeBulkString:
 		if value.IsNull {
-			return NullBulkString
+			encoded.WriteString(NullBulkString)
+			return
 		}
-		return fmt.Sprintf("$%d\r\n%s\r\n", len(value.String), value.String)
+		encoded.WriteByte('$')
+		writeInt(encoded, int64(len(value.String)))
+		encoded.WriteString("\r\n")
+		encoded.WriteString(value.String)
+		encoded.WriteString("\r\n")
 	case TypeArray:
 		if value.IsNull {
-			return NullArray
+			encoded.WriteString(NullArray)
+			return
 		}
-		encoded := fmt.Sprintf("*%d\r\n", len(value.Array))
+		encoded.WriteByte('*')
+		writeInt(encoded, int64(len(value.Array)))
+		encoded.WriteString("\r\n")
 		for _, item := range value.Array {
-			encoded += Encode(item)
+			encode(encoded, item)
 		}
-		return encoded
 	}
-	return ""
+}
+
+func writeInt(encoded *strings.Builder, value int64) {
+	buffer := strconv.AppendInt(nil, value, 10)
+	encoded.Write(buffer)
 }
 
 func Decode(reader *bufio.Reader) (Value, error) {

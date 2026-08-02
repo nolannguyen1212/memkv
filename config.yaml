@@ -3,6 +3,11 @@ server:
   read_timeout: 300
   write_timeout: 300
   auth: secretpassword
+  resp:
+    max_bulk_length: 16777216
+    max_array_length: 1024
+    max_depth: 8
+    max_line_length: 65536
 
 replication:
   role: "primary"
@@ -28,7 +33,3 @@ datastructure:
 memory:
   key_limit: 5000000
   evict_strategy: "lru"
-
-logging:
-  level: "info"
-  verbose_persistence: true
