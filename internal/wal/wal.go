@@ -1,7 +1,6 @@
 package wal
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -39,24 +38,57 @@ func Open(path string, enabled bool) (*Log, error) {
 	return &Log{file: file, enabled: true}, nil
 }
 
-func (aof *Log) Append(value resp.Value) error {
-	if !aof.enabled || aof.isReplaying.Load() {
+func (log *Log) Append(value resp.Value) error {
+	return log.append([]resp.Value{value})
+}
+
+func (log *Log) AppendBatch(values []resp.Value) error {
+	return log.append(values)
+}
+
+func (log *Log) append(values []resp.Value) error {
+	if !log.enabled || log.isReplaying.Load() {
 		return nil
 	}
-
-	aof.mutex.Lock()
-	defer aof.mutex.Unlock()
-
-	_, err := aof.file.WriteString(resp.Encode(value))
+	record, err := encodeRecord(values)
 	if err != nil {
 		return err
 	}
-	return aof.file.Sync()
+
+	log.mutex.Lock()
+	defer log.mutex.Unlock()
+
+	if err := writeAllFile(log.file, record); err != nil {
+		return err
+	}
+	return log.file.Sync()
 }
 
-func (aof *Log) Load(path string, dispatch func(cmd string, args []resp.Value) error) error {
-	if !aof.enabled {
+func (log *Log) Load(path string, dispatch func(cmd string, args []resp.Value) error) error {
+	return log.LoadBatches(path, func(commands []Command) error {
+		for _, command := range commands {
+			arguments := make([]resp.Value, len(command.Args))
+			for index, argument := range command.Args {
+				arguments[index] = resp.Value{Type: resp.TypeBulkString, String: argument}
+			}
+			if err := dispatch(command.Name, arguments); err != nil {
+				return fmt.Errorf("replay %s: %w", command.Name, err)
+			}
+		}
 		return nil
+	})
+}
+
+func (log *Log) LoadBatches(path string, dispatch func([]Command) error) error {
+	return log.LoadBatchesFrom(path, 0, dispatch)
+}
+
+func (log *Log) LoadBatchesFrom(path string, startOffset int64, dispatch func([]Command) error) error {
+	if !log.enabled {
+		return nil
+	}
+	if startOffset < 0 {
+		return fmt.Errorf("WAL start offset cannot be negative")
 	}
 
 	file, err := os.Open(path)
@@ -64,69 +96,110 @@ func (aof *Log) Load(path string, dispatch func(cmd string, args []resp.Value) e
 		return err
 	}
 	defer func() { _ = file.Close() }()
+	if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
+		return err
+	}
 
-	reader := bufio.NewReader(file)
-	aof.isReplaying.Store(true)
-	defer aof.isReplaying.Store(false)
+	log.isReplaying.Store(true)
+	defer log.isReplaying.Store(false)
 
+	offset := startOffset
 	for {
-		value, err := resp.Decode(reader)
+		commands, recordSize, err := decodeRecord(file, offset)
+		if err == io.EOF {
+			return nil
+		}
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return fmt.Errorf("decode AOF: %w", err)
+			return err
 		}
-		if value.Type != resp.TypeArray || len(value.Array) == 0 {
-			continue
+		if err := dispatch(commands); err != nil {
+			return fmt.Errorf("replay WAL batch at offset %d: %w", offset, err)
 		}
-		cmdValue := value.Array[0]
-		if cmdValue.Type != resp.TypeBulkString && cmdValue.Type != resp.TypeSimpleString {
-			continue
-		}
-		if err := dispatch(cmdValue.String, value.Array[1:]); err != nil {
-			return fmt.Errorf("replay %s: %w", cmdValue.String, err)
-		}
+		offset += recordSize
 	}
 }
 
-func (aof *Log) IsReplaying() bool {
-	return aof.isReplaying.Load()
+func (log *Log) Offset() (int64, error) {
+	if !log.enabled {
+		return 0, nil
+	}
+	log.mutex.Lock()
+	defer log.mutex.Unlock()
+	info, err := log.file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
 }
 
-func (aof *Log) SizeMB() float64 {
-	if !aof.enabled || aof.file == nil {
+func (log *Log) RepairTail() error {
+	if !log.enabled {
+		return nil
+	}
+	log.mutex.Lock()
+	defer log.mutex.Unlock()
+
+	if _, err := log.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	var offset int64
+	for {
+		_, size, err := decodeRecord(log.file, offset)
+		if err == io.EOF {
+			_, seekErr := log.file.Seek(0, io.SeekEnd)
+			return seekErr
+		}
+		if err == nil {
+			offset += size
+			continue
+		}
+		var truncated *truncatedRecordError
+		if !errors.As(err, &truncated) {
+			return err
+		}
+		if err := log.file.Truncate(offset); err != nil {
+			return err
+		}
+		if err := log.file.Sync(); err != nil {
+			return err
+		}
+		_, err = log.file.Seek(0, io.SeekEnd)
+		return err
+	}
+}
+
+func (log *Log) IsReplaying() bool {
+	return log.isReplaying.Load()
+}
+
+func (log *Log) SizeMB() float64 {
+	if !log.enabled || log.file == nil {
 		return 0
 	}
-	info, err := aof.file.Stat()
+	info, err := log.file.Stat()
 	if err != nil {
 		return 0
 	}
 	return float64(info.Size()) / (1024 * 1024)
 }
 
-func (aof *Log) Close() error {
-	if !aof.enabled {
+func (log *Log) Close() error {
+	if !log.enabled {
 		return nil
 	}
-	return aof.file.Close()
+	return log.file.Close()
 }
 
-func (aof *Log) RewriteAll(
-	dict map[string]store.Entry,
-	sets map[string]store.SetEntry,
-	lists map[string][]string,
-	hashes map[string]map[string]string,
-	sortedSets map[string]map[string]float64,
-	keyspace map[string]store.KeyMetadata,
+func (log *Log) RewriteAll(
+	state store.LogicalSnapshot,
 	path string,
 ) error {
-	if !aof.enabled {
+	if !log.enabled {
 		return nil
 	}
 
-	aof.mutex.Lock()
-	defer aof.mutex.Unlock()
+	log.mutex.Lock()
+	defer log.mutex.Unlock()
 
 	temp := path + tempSuffix
 	file, err := os.Create(temp)
@@ -140,13 +213,13 @@ func (aof *Log) RewriteAll(
 		}
 	}()
 
-	for key, entry := range dict {
+	for key, entry := range state.Strings {
 		if err := writeCmd(file, "SET", key, entry.Value); err != nil {
 			return err
 		}
 	}
 
-	for key, entry := range sets {
+	for key, entry := range state.Sets {
 		if len(entry.Members) == 0 {
 			continue
 		}
@@ -159,7 +232,7 @@ func (aof *Log) RewriteAll(
 		}
 	}
 
-	for key, values := range lists {
+	for key, values := range state.Lists {
 		if len(values) > 0 {
 			if err := writeCmd(file, append([]string{"RPUSH", key}, values...)...); err != nil {
 				return err
@@ -167,7 +240,7 @@ func (aof *Log) RewriteAll(
 		}
 	}
 
-	for key, hash := range hashes {
+	for key, hash := range state.Hashes {
 		for field, value := range hash {
 			if err := writeCmd(file, "HSET", key, field, value); err != nil {
 				return err
@@ -175,7 +248,7 @@ func (aof *Log) RewriteAll(
 		}
 	}
 
-	for key, members := range sortedSets {
+	for key, members := range state.SortedSets {
 		args := []string{"ZADD", key}
 		for member, score := range members {
 			args = append(args, strconv.FormatFloat(score, 'g', -1, 64), member)
@@ -187,7 +260,7 @@ func (aof *Log) RewriteAll(
 		}
 	}
 
-	for key, metadata := range keyspace {
+	for key, metadata := range state.Keyspace {
 		if !metadata.ExpiredAt.IsZero() {
 			if err := writeCmd(file, "PEXPIREAT", key, strconv.FormatInt(metadata.ExpiredAt.UnixMilli(), 10)); err != nil {
 				return err
@@ -209,8 +282,8 @@ func (aof *Log) RewriteAll(
 	if err != nil {
 		return err
 	}
-	oldFile := aof.file
-	aof.file = newFile
+	oldFile := log.file
+	log.file = newFile
 	if oldFile != nil {
 		_ = oldFile.Close()
 	}
@@ -222,6 +295,23 @@ func writeCmd(file *os.File, args ...string) error {
 	for i, arg := range args {
 		arr[i] = resp.Value{Type: resp.TypeBulkString, String: arg}
 	}
-	_, err := file.WriteString(resp.Encode(resp.Value{Type: resp.TypeArray, Array: arr}))
-	return err
+	record, err := encodeRecord([]resp.Value{{Type: resp.TypeArray, Array: arr}})
+	if err != nil {
+		return err
+	}
+	return writeAllFile(file, record)
+}
+
+func writeAllFile(file *os.File, data []byte) error {
+	for len(data) > 0 {
+		written, err := file.Write(data)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	return nil
 }

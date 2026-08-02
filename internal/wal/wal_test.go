@@ -3,13 +3,14 @@ package wal_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/william1nguyen/valkeydb/internal/engine"
 	"github.com/william1nguyen/valkeydb/internal/resp"
 	"github.com/william1nguyen/valkeydb/internal/snapshot"
 	"github.com/william1nguyen/valkeydb/internal/store"
-	"github.com/william1nguyen/valkeydb/internal/wal"
+	wallog "github.com/william1nguyen/valkeydb/internal/wal"
 )
 
 func command(name string, args ...string) (string, []resp.Value) {
@@ -29,23 +30,23 @@ func newStore() *store.Store {
 	return store.New(store.Config{})
 }
 
-func TestAOFReplaysListPopsAndSortedSetMutations(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "appendonly.aof")
-	aof, err := wal.Open(path, true)
+func TestWALReplaysListPopsAndSortedSetMutations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	wal, err := wallog.Open(path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = aof.Close() }()
+	defer func() { _ = wal.Close() }()
 
-	source := engine.NewConnContext(engine.NewContext(newStore(), aof, nil), nil)
+	source := engine.NewConnContext(engine.NewContext(newStore(), wal, nil, engine.SystemConfig{}), nil)
 	execute(source, "RPUSH", "list", "a", "b", "c")
 	execute(source, "LPOP", "list")
 	execute(source, "RPOP", "list")
 	execute(source, "ZADD", "scores", "1", "alice", "2", "bob")
 	execute(source, "ZREM", "scores", "bob")
 
-	target := engine.NewConnContext(engine.NewContext(newStore(), nil, nil), nil)
-	if err := aof.Load(path, func(name string, args []resp.Value) error {
+	target := engine.NewConnContext(engine.NewContext(newStore(), nil, nil, engine.SystemConfig{}), nil)
+	if err := wal.Load(path, func(name string, args []resp.Value) error {
 		engine.Execute(target, name, args)
 		return nil
 	}); err != nil {
@@ -64,18 +65,18 @@ func TestAOFReplaysListPopsAndSortedSetMutations(t *testing.T) {
 	}
 }
 
-func TestAOFRewriteKeepsSortedSetsAndContinuesAppending(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "appendonly.aof")
-	aof, err := wal.Open(path, true)
+func TestWALRewriteKeepsSortedSetsAndContinuesAppending(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	wal, err := wallog.Open(path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	keyspace := map[string]store.KeyMetadata{
-		"scores": {Type: store.KeyTypeSortedSet},
+	state := store.LogicalSnapshot{
+		Keyspace:   map[string]store.KeyMetadata{"scores": {Type: store.KeyTypeSortedSet}},
+		SortedSets: map[string]map[string]float64{"scores": {"alice": 1.5}},
 	}
-	if err := aof.RewriteAll(nil, nil, nil, nil,
-		map[string]map[string]float64{"scores": {"alice": 1.5}}, keyspace, path); err != nil {
+	if err := wal.RewriteAll(state, path); err != nil {
 		t.Fatal(err)
 	}
 	set := resp.Value{Type: resp.TypeArray, Array: []resp.Value{
@@ -83,19 +84,19 @@ func TestAOFRewriteKeepsSortedSetsAndContinuesAppending(t *testing.T) {
 		{Type: resp.TypeBulkString, String: "after"},
 		{Type: resp.TypeBulkString, String: "rewrite"},
 	}}
-	if err := aof.Append(set); err != nil {
+	if err := wal.Append(set); err != nil {
 		t.Fatal(err)
 	}
-	if err := aof.Close(); err != nil {
+	if err := wal.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	loader, err := wal.Open(path, true)
+	loader, err := wallog.Open(path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = loader.Close() }()
-	target := engine.NewConnContext(engine.NewContext(newStore(), nil, nil), nil)
+	target := engine.NewConnContext(engine.NewContext(newStore(), nil, nil, engine.SystemConfig{}), nil)
 	if err := loader.Load(path, func(name string, args []resp.Value) error {
 		engine.Execute(target, name, args)
 		return nil
@@ -110,61 +111,298 @@ func TestAOFRewriteKeepsSortedSetsAndContinuesAppending(t *testing.T) {
 	}
 }
 
-func TestRDBRoundTripIncludesTypedSortedSet(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "dump.rdb")
-	rdb, err := snapshot.Open(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = rdb.Close() }()
+func TestSnapshotRoundTripIncludesTypedSortedSet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dump.vksp")
+	snapshotFile := snapshot.New(true)
+	defer func() { _ = snapshotFile.Close() }()
 
-	data := snapshot.Data{
-		KeyspaceData: map[string]store.KeyMetadata{
+	data := snapshot.Data{State: store.LogicalSnapshot{
+		Keyspace: map[string]store.KeyMetadata{
 			"scores": {Type: store.KeyTypeSortedSet, Version: 3},
 		},
-		SortedSetData: map[string]map[string]float64{"scores": {"alice": 1.5}},
-	}
-	if err := rdb.Save(data, path); err != nil {
+		SortedSets: map[string]map[string]float64{"scores": {"alice": 1.5}},
+	}}
+	if err := snapshotFile.Save(data, path); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := rdb.Load(path)
+	loaded, err := snapshotFile.Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.KeyspaceData["scores"].Type != store.KeyTypeSortedSet {
-		t.Fatalf("key type not preserved: %#v", loaded.KeyspaceData["scores"])
+	if loaded.State.Keyspace["scores"].Type != store.KeyTypeSortedSet {
+		t.Fatalf("key type not preserved: %#v", loaded.State.Keyspace["scores"])
 	}
-	if loaded.SortedSetData["scores"]["alice"] != 1.5 {
-		t.Fatalf("sorted set not preserved: %#v", loaded.SortedSetData)
+	if loaded.State.SortedSets["scores"]["alice"] != 1.5 {
+		t.Fatalf("sorted set not preserved: %#v", loaded.State.SortedSets)
 	}
 }
 
-func TestAOFLoadRejectsTruncatedCommand(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "truncated.aof")
+func TestWALLoadRejectsTruncatedCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "truncated.wal")
 	if err := os.WriteFile(path, []byte("*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nval"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	aof, err := wal.Open(path, true)
+	wal, err := wallog.Open(path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = aof.Close() }()
-	if err := aof.Load(path, func(string, []resp.Value) error { return nil }); err == nil {
-		t.Fatal("truncated AOF should return a recovery error")
+	defer func() { _ = wal.Close() }()
+	if err := wal.Load(path, func(string, []resp.Value) error { return nil }); err == nil {
+		t.Fatal("truncated WAL should return a recovery error")
 	}
 }
 
-func TestRDBLoadRejectsTruncatedSnapshot(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "truncated.rdb")
+func TestSnapshotLoadRejectsTruncatedSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "truncated.vksp")
 	if err := os.WriteFile(path, []byte{0x7f, 0x01}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rdb, err := snapshot.Open(path, true)
+	snapshotFile := snapshot.New(true)
+	defer func() { _ = snapshotFile.Close() }()
+	if _, err := snapshotFile.Load(path); err == nil {
+		t.Fatal("truncated snapshot should return a recovery error")
+	}
+}
+
+func TestWALBatchRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	log, err := wallog.Open(path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rdb.Close() }()
-	if _, err := rdb.Load(path); err == nil {
-		t.Fatal("truncated RDB should return a recovery error")
+	values := []resp.Value{
+		{Type: resp.TypeArray, Array: []resp.Value{
+			{Type: resp.TypeBulkString, String: "SET"},
+			{Type: resp.TypeBulkString, String: "a"},
+			{Type: resp.TypeBulkString, String: "1"},
+		}},
+		{Type: resp.TypeArray, Array: []resp.Value{
+			{Type: resp.TypeBulkString, String: "DEL"},
+			{Type: resp.TypeBulkString, String: "b"},
+		}},
+	}
+	if err := log.AppendBatch(values); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	loader, err := wallog.Open(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = loader.Close() }()
+	var names []string
+	if err := loader.Load(path, func(name string, _ []resp.Value) error {
+		names = append(names, name)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(names, ",") != "SET,DEL" {
+		t.Fatalf("replayed commands = %v, want [SET DEL]", names)
+	}
+}
+
+func TestWALLoadRejectsCorruptRecord(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func([]byte) []byte
+		want   string
+	}{
+		{
+			name: "checksum",
+			mutate: func(data []byte) []byte {
+				data[len(data)-1] ^= 0xff
+				return data
+			},
+			want: "checksum",
+		},
+		{
+			name: "version",
+			mutate: func(data []byte) []byte {
+				data[4]++
+				return data
+			},
+			want: "version",
+		},
+		{
+			name: "truncated payload",
+			mutate: func(data []byte) []byte {
+				return data[:len(data)-1]
+			},
+			want: "truncated WAL payload",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "valkeydb.wal")
+			log, err := wallog.Open(path, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value := resp.Value{Type: resp.TypeArray, Array: []resp.Value{
+				{Type: resp.TypeBulkString, String: "SET"},
+				{Type: resp.TypeBulkString, String: "key"},
+				{Type: resp.TypeBulkString, String: "value"},
+			}}
+			if err := log.Append(value); err != nil {
+				t.Fatal(err)
+			}
+			if err := log.Close(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, test.mutate(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			loader, err := wallog.Open(path, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = loader.Close() }()
+			err = loader.Load(path, func(string, []resp.Value) error { return nil })
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "offset 0") {
+				t.Fatalf("Load() error = %v, want %q at offset 0", err, test.want)
+			}
+		})
+	}
+}
+
+func TestWALRepairTailDropsIncompleteFinalRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	log, err := wallog.Open(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := resp.Value{Type: resp.TypeArray, Array: []resp.Value{
+		{Type: resp.TypeBulkString, String: "SET"},
+		{Type: resp.TypeBulkString, String: "key"},
+		{Type: resp.TypeBulkString, String: "value"},
+	}}
+	if err := log.Append(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("VKWL\x01")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, err = wallog.Open(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	if err := log.RepairTail(); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	if err := log.Load(path, func(string, []resp.Value) error {
+		count++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("replayed %d commands, want 1", count)
+	}
+}
+
+func TestBatchReplayFailureDoesNotPartiallyApply(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	log, err := wallog.Open(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := []resp.Value{
+		{Type: resp.TypeArray, Array: []resp.Value{
+			{Type: resp.TypeBulkString, String: "SET"},
+			{Type: resp.TypeBulkString, String: "key"},
+			{Type: resp.TypeBulkString, String: "value"},
+		}},
+		{Type: resp.TypeArray, Array: []resp.Value{
+			{Type: resp.TypeBulkString, String: "ZADD"},
+			{Type: resp.TypeBulkString, String: "scores"},
+			{Type: resp.TypeBulkString, String: "not-a-score"},
+			{Type: resp.TypeBulkString, String: "member"},
+		}},
+	}
+	if err := log.AppendBatch(values); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	loader, err := wallog.Open(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = loader.Close() }()
+	base := engine.NewContext(newStore(), nil, nil, engine.SystemConfig{})
+	err = loader.LoadBatches(path, func(commands []wallog.Command) error {
+		batch := make([]engine.QueuedCommand, len(commands))
+		for index, command := range commands {
+			batch[index] = engine.Command{Name: command.Name, Args: command.Args}
+		}
+		return base.Replay(batch)
+	})
+	if err == nil {
+		t.Fatal("LoadBatches() accepted invalid batch")
+	}
+	if _, exists := base.Store.Dictionary.Get("key"); exists {
+		t.Fatal("failed batch replay partially applied first command")
+	}
+}
+
+func TestWALLoadFromCheckpointOffset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	log, err := wallog.Open(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := func(key string) resp.Value {
+		return resp.Value{Type: resp.TypeArray, Array: []resp.Value{
+			{Type: resp.TypeBulkString, String: "SET"},
+			{Type: resp.TypeBulkString, String: key},
+			{Type: resp.TypeBulkString, String: "value"},
+		}}
+	}
+	if err := log.Append(value("before")); err != nil {
+		t.Fatal(err)
+	}
+	offset, err := log.Offset()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(value("after")); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	if err := log.LoadBatchesFrom(path, offset, func(commands []wallog.Command) error {
+		keys = append(keys, commands[0].Args[0])
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(keys, ",") != "after" {
+		t.Fatalf("replayed keys = %v, want [after]", keys)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
