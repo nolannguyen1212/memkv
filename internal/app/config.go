@@ -35,18 +35,18 @@ type ReplicationConfig struct {
 }
 
 type PersistenceConfig struct {
-	AOF AOFConfig `yaml:"aof"`
-	RDB RDBConfig `yaml:"rdb"`
+	WAL      WALConfig      `yaml:"wal"`
+	Snapshot SnapshotConfig `yaml:"snapshot"`
 }
 
-type AOFConfig struct {
+type WALConfig struct {
 	Enabled         bool   `yaml:"enabled"`
 	Filename        string `yaml:"filename"`
 	RewriteInterval int    `yaml:"rewrite_interval"`
 	MaxSizeMB       int    `yaml:"max_size_mb"`
 }
 
-type RDBConfig struct {
+type SnapshotConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	Filename string `yaml:"filename"`
 }
@@ -56,9 +56,7 @@ type DatastructureConfig struct {
 }
 
 type ExpirationConfig struct {
-	MaxSampleSize   int `yaml:"max_sample_size"`
-	MaxSampleRounds int `yaml:"max_sample_rounds"`
-	CheckInterval   int `yaml:"check_interval"`
+	CheckInterval int `yaml:"check_interval"`
 }
 
 type MemoryConfig struct {
@@ -112,23 +110,23 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("replication.role must be %q or %q", "primary", "replica")
 	}
-	if c.Datastructure.Expiration.CheckInterval <= 0 || c.Datastructure.Expiration.MaxSampleSize <= 0 || c.Datastructure.Expiration.MaxSampleRounds <= 0 {
-		return fmt.Errorf("store.expiration values must be positive")
+	if c.Datastructure.Expiration.CheckInterval <= 0 {
+		return fmt.Errorf("datastructure.expiration.check_interval must be positive")
 	}
-	if c.Persistence.AOF.Enabled && strings.TrimSpace(c.Persistence.AOF.Filename) == "" {
-		return fmt.Errorf("persistence.aof.filename is required when AOF is enabled")
+	if c.Persistence.WAL.Enabled && strings.TrimSpace(c.Persistence.WAL.Filename) == "" {
+		return fmt.Errorf("persistence.wal.filename is required when WAL is enabled")
 	}
-	if c.Persistence.RDB.Enabled && strings.TrimSpace(c.Persistence.RDB.Filename) == "" {
-		return fmt.Errorf("persistence.rdb.filename is required when RDB is enabled")
+	if c.Persistence.Snapshot.Enabled && strings.TrimSpace(c.Persistence.Snapshot.Filename) == "" {
+		return fmt.Errorf("persistence.snapshot.filename is required when snapshot is enabled")
 	}
-	if c.Persistence.AOF.RewriteInterval <= 0 {
-		return fmt.Errorf("persistence.aof.rewrite_interval must be positive")
+	if c.Persistence.WAL.RewriteInterval <= 0 {
+		return fmt.Errorf("persistence.wal.rewrite_interval must be positive")
 	}
 	if c.Memory.KeyLimit != nil && *c.Memory.KeyLimit <= 0 {
 		return fmt.Errorf("memory.key_limit must be positive when set")
 	}
 	switch c.Memory.EvictStrategy {
-	case "", "lru", "lfu", "evict_first":
+	case "", "lru":
 	default:
 		return fmt.Errorf("memory.evict_strategy %q is not supported", c.Memory.EvictStrategy)
 	}
@@ -143,8 +141,8 @@ func (c Config) WriteTimeout() time.Duration {
 	return time.Duration(c.Server.WriteTimeout) * time.Second
 }
 
-func (c Config) AOFRewriteInterval() time.Duration {
-	return time.Duration(c.Persistence.AOF.RewriteInterval) * time.Second
+func (c Config) WALRewriteInterval() time.Duration {
+	return time.Duration(c.Persistence.WAL.RewriteInterval) * time.Second
 }
 
 func (c Config) ExpirationCheckInterval() time.Duration {

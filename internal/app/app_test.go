@@ -21,13 +21,11 @@ func TestApplicationStopsWithCanceledContext(t *testing.T) {
 			BacklogSize: 1024,
 		},
 		Persistence: app.PersistenceConfig{
-			AOF: app.AOFConfig{RewriteInterval: 60},
+			WAL: app.WALConfig{RewriteInterval: 60},
 		},
 		Datastructure: app.DatastructureConfig{
 			Expiration: app.ExpirationConfig{
-				MaxSampleSize:   1,
-				MaxSampleRounds: 1,
-				CheckInterval:   1,
+				CheckInterval: 1,
 			},
 		},
 	}

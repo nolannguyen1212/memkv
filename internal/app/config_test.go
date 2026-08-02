@@ -14,10 +14,10 @@ func TestLoadReturnsValidatedConfig(t *testing.T) {
 server: {addr: ":0", read_timeout: 1, write_timeout: 1}
 replication: {role: "primary", backlog_size: 1024}
 persistence:
-  aof: {enabled: false, rewrite_interval: 60}
-  rdb: {enabled: false}
+  wal: {enabled: false, rewrite_interval: 60}
+  snapshot: {enabled: false}
 datastructure:
-  expiration: {max_sample_size: 1, max_sample_rounds: 1, check_interval: 1}
+  expiration: {check_interval: 1}
 memory: {evict_strategy: ""}
 `)
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
@@ -64,13 +64,31 @@ func TestValidateRejectsReplicaWithoutPrimary(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsDeferredEvictionStrategy(t *testing.T) {
+	cfg := validConfig()
+	cfg.Memory.EvictStrategy = "lfu"
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate should reject a deferred eviction strategy")
+	}
+}
+
+func TestValidateAcceptsSnapshotWithWALSuffixRecovery(t *testing.T) {
+	cfg := validConfig()
+	cfg.Persistence.WAL.Enabled = true
+	cfg.Persistence.WAL.Filename = "valkeydb.wal"
+	cfg.Persistence.Snapshot.Enabled = true
+	cfg.Persistence.Snapshot.Filename = "dump.vksp"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected WAL and snapshot together: %v", err)
+	}
+}
+
 func validConfig() app.Config {
 	return app.Config{
-		Server:      app.ServerConfig{Address: ":6379", ReadTimeout: 1, WriteTimeout: 1},
-		Replication: app.ReplicationConfig{Role: "primary", BacklogSize: 1024},
-		Persistence: app.PersistenceConfig{AOF: app.AOFConfig{RewriteInterval: 60}},
-		Datastructure: app.DatastructureConfig{Expiration: app.ExpirationConfig{
-			MaxSampleSize: 1, MaxSampleRounds: 1, CheckInterval: 1,
-		}},
+		Server:        app.ServerConfig{Address: ":6379", ReadTimeout: 1, WriteTimeout: 1},
+		Replication:   app.ReplicationConfig{Role: "primary", BacklogSize: 1024},
+		Persistence:   app.PersistenceConfig{WAL: app.WALConfig{RewriteInterval: 60}},
+		Datastructure: app.DatastructureConfig{Expiration: app.ExpirationConfig{CheckInterval: 1}},
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -90,9 +89,9 @@ func (server *Server) acceptConnections() error {
 		go func(conn net.Conn) {
 			defer server.waitGroup.Done()
 			defer server.untrackConnection(conn)
-			engine.IncConnections()
+			server.ctx.ConnectionOpened()
 			server.handleConnection(conn)
-			engine.DecConnections()
+			server.ctx.ConnectionClosed()
 		}(conn)
 	}
 }
@@ -158,7 +157,7 @@ func (server *Server) handleConnection(conn net.Conn) {
 	}()
 
 	connContext := engine.NewConnContext(server.ctx, conn)
-	defer engine.UnwatchConn(connContext.ID)
+	defer server.ctx.Disconnect(connContext.ID)
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
@@ -174,7 +173,14 @@ func (server *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		cmdName := server.extractCommandName(request)
+		command, valid := server.parseCommand(request)
+		if !valid {
+			if err := server.writeResponse(writer, conn, resp.Value{Type: resp.TypeError, String: "ERR invalid command frame"}); err != nil {
+				return
+			}
+			continue
+		}
+		cmdName := command.Name
 
 		if !authenticated {
 			if server.handleUnauthenticated(conn, writer, request, cmdName, &authenticated, connContext) {
@@ -182,11 +188,10 @@ func (server *Server) handleConnection(conn net.Conn) {
 			}
 		}
 
-		engine.MonitorPublish(cmdName, request.Array[1:])
-		response := engine.Execute(connContext, cmdName, request.Array[1:])
-		engine.IncCommands()
+		response := engine.ExecuteCommand(connContext, command)
+		server.ctx.CommandProcessed()
 
-		if cmdName == "PSYNC" {
+		if cmdName == "PSYNC" && response.Type != resp.TypeError {
 			connTaken = true
 			return
 		}
@@ -198,29 +203,25 @@ func (server *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		if cmdName == "SUBSCRIBE" {
-			server.enterPubsubMode(conn, writer)
-			return
-		}
-
-		if cmdName == "MONITOR" {
-			server.enterMonitorMode(conn, writer)
-			return
-		}
 	}
 }
 
-func (server *Server) extractCommandName(request resp.Value) string {
-	if request.Type == resp.TypeArray && len(request.Array) > 0 {
-		return strings.ToUpper(request.Array[0].String)
+func (server *Server) parseCommand(request resp.Value) (engine.Command, bool) {
+	if request.Type != resp.TypeArray || len(request.Array) == 0 {
+		return engine.Command{}, false
 	}
-	return ""
+	for _, value := range request.Array {
+		if value.Type != resp.TypeBulkString && value.Type != resp.TypeSimpleString {
+			return engine.Command{}, false
+		}
+	}
+	return engine.NewCommand(request.Array[0].String, request.Array[1:]), true
 }
 
 func (server *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer, request resp.Value, cmdName string, authenticated *bool, connContext *engine.ConnContext) bool {
 	switch cmdName {
 	case "AUTH":
-		response := engine.Execute(connContext, cmdName, request.Array[1:])
+		response := engine.ExecuteCommand(connContext, engine.NewCommand(cmdName, request.Array[1:]))
 		if response.Type == resp.TypeSimpleString && response.String == "OK" {
 			*authenticated = true
 		}
@@ -236,40 +237,6 @@ func (server *Server) handleUnauthenticated(conn net.Conn, writer *bufio.Writer,
 		_ = conn.SetWriteDeadline(time.Now().Add(server.config.WriteTimeout))
 		_ = server.writeResponse(writer, conn, response)
 		return true
-	}
-}
-
-func (server *Server) enterPubsubMode(conn net.Conn, writer *bufio.Writer) {
-	msgChan := engine.GetActiveChannel()
-	if msgChan == nil {
-		return
-	}
-
-	for msg := range msgChan {
-		response := resp.Value{
-			Type: resp.TypeArray,
-			Array: []resp.Value{
-				{Type: resp.TypeBulkString, String: "message"},
-				{Type: resp.TypeBulkString, String: msg.Channel},
-				{Type: resp.TypeBulkString, String: msg.Content},
-			},
-		}
-		_ = conn.SetWriteDeadline(time.Now().Add(server.config.WriteTimeout))
-		if err := server.writeResponse(writer, conn, response); err != nil {
-			return
-		}
-	}
-}
-
-func (server *Server) enterMonitorMode(conn net.Conn, writer *bufio.Writer) {
-	monitorChannel := engine.MonitorSubscribe()
-	defer engine.MonitorUnsubscribe(monitorChannel)
-
-	for message := range monitorChannel {
-		_ = conn.SetWriteDeadline(time.Now().Add(server.config.WriteTimeout))
-		if err := server.writeResponse(writer, conn, message); err != nil {
-			return
-		}
 	}
 }
 

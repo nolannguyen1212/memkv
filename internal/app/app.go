@@ -34,36 +34,28 @@ func New(cfg Config, logger *slog.Logger) (*Application, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	engine.ConfigureSystem(
-		cfg.Server.Auth,
-		cfg.Persistence.AOF.Enabled,
-		cfg.Persistence.RDB.Enabled,
-	)
-
 	database := store.New(store.Config{
 		ExpirationCheckInterval: cfg.ExpirationCheckInterval(),
-		ExpirationMaxSampleSize: cfg.Datastructure.Expiration.MaxSampleSize,
-		ExpirationMaxRounds:     cfg.Datastructure.Expiration.MaxSampleRounds,
 		KeyLimit:                cfg.Memory.KeyLimit,
 		EvictStrategy:           cfg.Memory.EvictStrategy,
 	})
 
-	log, err := wal.Open(cfg.Persistence.AOF.Filename, cfg.Persistence.AOF.Enabled)
+	log, err := wal.Open(cfg.Persistence.WAL.Filename, cfg.Persistence.WAL.Enabled)
 	if err != nil {
-		return nil, fmt.Errorf("open AOF: %w", err)
+		return nil, fmt.Errorf("open WAL: %w", err)
 	}
 
-	snapshotFile, err := snapshot.Open(cfg.Persistence.RDB.Filename, cfg.Persistence.RDB.Enabled)
-	if err != nil {
-		_ = log.Close()
-		return nil, fmt.Errorf("open RDB: %w", err)
-	}
+	snapshotFile := snapshot.New(cfg.Persistence.Snapshot.Enabled)
 
 	replicationManager := replication.NewManager(replication.ManagerConfig{
 		BacklogCapacity:  cfg.Replication.BacklogSize,
 		ListeningAddress: cfg.Server.Address,
 	})
-	executionContext := engine.NewContext(database, log, replicationManager)
+	executionContext := engine.NewContext(database, log, replicationManager, engine.SystemConfig{
+		Auth:            cfg.Server.Auth,
+		WALEnabled:      cfg.Persistence.WAL.Enabled,
+		SnapshotEnabled: cfg.Persistence.Snapshot.Enabled,
+	})
 
 	a := &Application{
 		config:      cfg,
@@ -95,6 +87,13 @@ func (a *Application) Run(ctx context.Context) error {
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	engineContext, stopEngine := context.WithCancel(context.Background())
+	defer stopEngine()
+	engineErrors := make(chan error, 1)
+	go func() {
+		engineErrors <- a.engine.Run(engineContext)
+	}()
+	<-a.engine.Ready()
 	a.startReplica(runContext)
 
 	serverErrors := make(chan error, 1)
@@ -106,17 +105,23 @@ func (a *Application) Run(ctx context.Context) error {
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
-		a.runAOFRewrite(runContext)
+		a.runWALRewrite(runContext)
 	}()
 
 	var runErr error
 	serverStopped := false
+	engineStopped := false
 	select {
 	case <-ctx.Done():
 	case err := <-serverErrors:
 		serverStopped = true
 		if err != nil {
 			runErr = fmt.Errorf("serve: %w", err)
+		}
+	case err := <-engineErrors:
+		engineStopped = true
+		if err != nil {
+			runErr = fmt.Errorf("engine: %w", err)
 		}
 	}
 
@@ -137,7 +142,16 @@ func (a *Application) Run(ctx context.Context) error {
 	}
 	workers.Wait()
 
-	snapshotErr := a.saveSnapshot()
+	var snapshotErr error
+	if !engineStopped {
+		snapshotErr = a.saveSnapshot()
+	}
+	stopEngine()
+	if !engineStopped {
+		if err := <-engineErrors; err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("engine: %w", err))
+		}
+	}
 	resourceErr := a.closeResources()
 	return errors.Join(runErr, serverErr, snapshotErr, resourceErr)
 }
@@ -146,11 +160,14 @@ func (a *Application) recover() error {
 	a.replication.SetReplaying(true)
 	defer a.replication.SetReplaying(false)
 
-	if err := a.loadSnapshot(); err != nil {
+	includedOffset, err := a.loadSnapshot()
+	if err != nil {
 		return fmt.Errorf("restore snapshot: %w", err)
 	}
-	if err := a.replayAOF(); err != nil {
-		return fmt.Errorf("replay AOF: %w", err)
+	if a.config.Persistence.WAL.Enabled {
+		if err := a.replayWAL(includedOffset); err != nil {
+			return fmt.Errorf("replay WAL: %w", err)
+		}
 	}
 	return nil
 }
@@ -167,16 +184,28 @@ func (a *Application) startReplica(ctx context.Context) {
 		}
 		return nil
 	}
+	applyBatch := func(commands []replication.Command) error {
+		batch := make([]engine.QueuedCommand, len(commands))
+		for index, command := range commands {
+			batch[index] = engine.NewCommand(command.Name, command.Args)
+		}
+		return a.engine.ApplyBatch(batch)
+	}
 	a.replication.StartReplica(
 		ctx,
 		a.config.Replication.PrimaryAddress,
 		a.config.Replication.Username,
 		a.config.Replication.Password,
 		apply,
+		applyBatch,
+		a.engine.RestoreSnapshot,
 	)
 }
 
-func (a *Application) runAOFRewrite(ctx context.Context) {
+func (a *Application) runWALRewrite(ctx context.Context) {
+	if !a.config.Persistence.WAL.Enabled || a.config.Persistence.Snapshot.Enabled {
+		return
+	}
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	lastRewrite := time.Now()
@@ -187,128 +216,62 @@ func (a *Application) runAOFRewrite(ctx context.Context) {
 			return
 		case <-ticker.C:
 			sizeMB := a.wal.SizeMB()
-			sizeLimit := float64(a.config.Persistence.AOF.MaxSizeMB)
+			sizeLimit := float64(a.config.Persistence.WAL.MaxSizeMB)
 			sizeExceeded := sizeLimit > 0 && sizeMB >= sizeLimit
-			timeExceeded := time.Since(lastRewrite) >= a.config.AOFRewriteInterval()
+			timeExceeded := time.Since(lastRewrite) >= a.config.WALRewriteInterval()
 			if !sizeExceeded && !timeExceeded {
 				continue
 			}
-			if err := a.rewriteAOF(); err != nil {
-				a.logger.Error("rewrite AOF", "error", err)
+			if err := a.rewriteWAL(); err != nil {
+				a.logger.Error("rewrite WAL", "error", err)
 				continue
 			}
 			lastRewrite = time.Now()
-			a.logger.Info("AOF rewrite complete")
+			a.logger.Info("WAL rewrite complete")
 		}
 	}
 }
 
-func (a *Application) rewriteAOF() error {
-	a.store.ExecMu.Lock()
-	defer a.store.ExecMu.Unlock()
-	return a.wal.RewriteAll(
-		a.store.Dictionary.Snapshot(),
-		a.store.Set.Snapshot(),
-		a.store.List.Snapshot(),
-		a.store.Hash.Snapshot(),
-		a.store.SortedSet.Snapshot(),
-		a.store.Keyspace.Snapshot(),
-		a.config.Persistence.AOF.Filename,
-	)
+func (a *Application) rewriteWAL() error {
+	return a.engine.RewriteWAL(a.config.Persistence.WAL.Filename)
 }
 
 func (a *Application) saveSnapshot() error {
-	if !a.config.Persistence.RDB.Enabled {
+	if !a.config.Persistence.Snapshot.Enabled {
 		return nil
 	}
-	a.store.ExecMu.Lock()
-	data := snapshot.Data{
-		KeyspaceData:  a.store.Keyspace.Snapshot(),
-		DictData:      a.store.Dictionary.Snapshot(),
-		SetData:       a.store.Set.Snapshot(),
-		ListData:      a.store.List.Snapshot(),
-		HashData:      a.store.Hash.Snapshot(),
-		SortedSetData: a.store.SortedSet.Snapshot(),
+	checkpoint, err := a.engine.Checkpoint()
+	if err != nil {
+		return err
 	}
-	a.store.ExecMu.Unlock()
-	if err := a.snapshot.Save(data, a.config.Persistence.RDB.Filename); err != nil {
+	data := snapshot.Data{State: checkpoint.State, IncludedOffset: checkpoint.WALOffset}
+	if err := a.snapshot.Save(data, a.config.Persistence.Snapshot.Filename); err != nil {
 		return fmt.Errorf("save snapshot: %w", err)
 	}
 	return nil
 }
 
-func (a *Application) loadSnapshot() error {
-	data, err := a.snapshot.Load(a.config.Persistence.RDB.Filename)
+func (a *Application) loadSnapshot() (int64, error) {
+	data, err := a.snapshot.Load(a.config.Persistence.Snapshot.Filename)
 	if err != nil || data == nil {
-		return err
+		return 0, err
 	}
-	for key, metadata := range data.KeyspaceData {
-		a.store.Keyspace.Restore(key, metadata)
+	if err := a.store.Restore(data.State, a.store.Now()); err != nil {
+		return 0, err
 	}
-	for key, entry := range data.DictData {
-		if !a.prepareRestoredKey(key, store.KeyTypeString, data.KeyspaceData) {
-			continue
-		}
-		a.store.Dictionary.Set(key, entry.Value, 0)
-		if len(data.KeyspaceData) == 0 && !entry.ExpiredAt.IsZero() {
-			a.store.Keyspace.ExpireAt(key, entry.ExpiredAt)
-		}
-	}
-	for key, entry := range data.SetData {
-		if !a.prepareRestoredKey(key, store.KeyTypeSet, data.KeyspaceData) || len(entry.Members) == 0 {
-			continue
-		}
-		members := make([]string, 0, len(entry.Members))
-		for member := range entry.Members {
-			members = append(members, member)
-		}
-		a.store.Set.Add(key, members...)
-		if len(data.KeyspaceData) == 0 && !entry.ExpiredAt.IsZero() {
-			a.store.Keyspace.ExpireAt(key, entry.ExpiredAt)
-		}
-	}
-	for key, values := range data.ListData {
-		if a.prepareRestoredKey(key, store.KeyTypeList, data.KeyspaceData) && len(values) > 0 {
-			a.store.List.RightPush(key, values...)
-		}
-	}
-	for key, hash := range data.HashData {
-		if !a.prepareRestoredKey(key, store.KeyTypeHash, data.KeyspaceData) {
-			continue
-		}
-		for field, value := range hash {
-			a.store.Hash.Set(key, field, value)
-		}
-	}
-	for key, members := range data.SortedSetData {
-		if !a.prepareRestoredKey(key, store.KeyTypeSortedSet, data.KeyspaceData) {
-			continue
-		}
-		items := make([]store.ScoreMember, 0, len(members))
-		for member, score := range members {
-			items = append(items, store.ScoreMember{Member: member, Score: score})
-		}
-		a.store.SortedSet.Add(key, items...)
-	}
-	return nil
+	return data.IncludedOffset, nil
 }
 
-func (a *Application) prepareRestoredKey(key string, keyType store.KeyType, metadata map[string]store.KeyMetadata) bool {
-	if len(metadata) == 0 {
-		return a.store.PrepareWrite(key, keyType, false)
+func (a *Application) replayWAL(startOffset int64) error {
+	if err := a.wal.RepairTail(); err != nil {
+		return fmt.Errorf("repair WAL tail: %w", err)
 	}
-	exists, valid := a.store.HasType(key, keyType)
-	return exists && valid
-}
-
-func (a *Application) replayAOF() error {
-	connection := engine.NewConnContext(a.engine, nil)
-	return a.wal.Load(a.config.Persistence.AOF.Filename, func(command string, args []resp.Value) error {
-		result := engine.Execute(connection, command, args)
-		if result.Type == resp.TypeError {
-			return fmt.Errorf("execute %s: %s", command, result.String)
+	return a.wal.LoadBatchesFrom(a.config.Persistence.WAL.Filename, startOffset, func(commands []wal.Command) error {
+		batch := make([]engine.QueuedCommand, len(commands))
+		for index, command := range commands {
+			batch[index] = engine.Command{Name: command.Name, Args: command.Args}
 		}
-		return nil
+		return a.engine.Replay(batch)
 	})
 }
 

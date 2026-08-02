@@ -12,19 +12,17 @@ replication:
   backlog_size: 1048576
 
 persistence:
-  aof:
+  wal:
     enabled: true
-    filename: "appendonly-replica.aof"
+    filename: "replica.wal"
     rewrite_interval: 3600
     max_size_mb: 64
-  rdb:
-    enabled: true
-    filename: "dump-replica.rdb"
+  snapshot:
+    enabled: false
+    filename: "dump-replica.vksp"
 
 datastructure:
   expiration:
-    max_sample_size: 20
-    max_sample_rounds: 3
     check_interval: 1
 
 memory:

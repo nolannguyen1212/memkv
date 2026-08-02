@@ -1,19 +1,18 @@
 # ValkeyDB
 
-A high-performance, Redis-compatible in-memory database built from scratch in Go.
+A Redis-compatible learning database built from scratch in Go.
 
 ## Key Features
 
-- **RESP Protocol Compliant**: Fully compatible with redis-cli and other Redis clients
+- **RESP2 Protocol**: Supports redis-cli and Redis clients for the implemented command set
 - **Multiple Data Structures**:
   - Dictionary (String key-value pairs)
   - Sets (Unique collections)
   - Lists (Deque semantics)
   - Hashes (Field-value maps)
-  - Sorted Sets (Score-based ordering using Skip List)
-  - Pub/Sub (Message broadcasting)
-- **Memory Eviction**: Configurable eviction strategies (LRU, LFU, EvictFirst)
-- **Dual Persistence**: AOF and RDB support
+  - Sorted Sets (Score map with deterministic sorted slice ordering)
+- **Memory Eviction**: Optional LRU eviction
+- **Persistence**: WAL and versioned, checksummed snapshots
 - **TTL Support**: Automatic key expiration
 
 ## System Architecture
@@ -47,12 +46,11 @@ OK
 | ----------- | ----------------------------------------------------- |
 | String      | SET, GET, DEL, TTL, EXPIRE, PING                      |
 | Sorted Set  | ZADD, ZREM, ZSCORE, ZRANK, ZCARD, ZRANGE              |
-| Set         | SADD, SREM, SCARD, SMEMBERS, SISMEMBER, SEXPIRE, STTL |
-| List        | LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE, SORT          |
+| Set         | SADD, SREM, SCARD, SMEMBERS, SISMEMBER                 |
+| List        | LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE                 |
 | Hash        | HSET, HGET, HDEL, HGETALL, HEXISTS, HLEN              |
-| Pub/Sub     | SUBSCRIBE, UNSUBSCRIBE, PUBLISH                       |
 | Transaction | MULTI, EXEC, DISCARD, WATCH, UNWATCH                  |
-| System      | AUTH, INFO, BGSAVE, KEYS, MONITOR                     |
+| System      | AUTH, INFO, KEYS                                      |
 
 ## Transactions
 
@@ -110,7 +108,7 @@ make replica
 # Uses config.replica.yaml by default.
 ```
 
-To run more replicas, copy `config.replica.yaml` and give every process a unique `server.addr`, AOF filename, and RDB filename. The primary neither creates replica processes nor owns a replica-count setting.
+To run more replicas, copy `config.replica.yaml` and give every process a unique `server.addr`, WAL filename, and snapshot filename. The primary neither creates replica processes nor owns a replica-count setting.
 
 ```mermaid
 sequenceDiagram
@@ -123,7 +121,7 @@ sequenceDiagram
     R->>P: AUTH (when configured)
     R->>P: REPLCONF / PSYNC
     alt Full sync
-        P->>R: Send RDB snapshot
+        P->>R: Send full snapshot
     else Partial sync
         P->>B: Read missing commands
         B->>R: Send backlog delta
@@ -135,7 +133,7 @@ sequenceDiagram
     end
 ```
 
-On connect, the replica performs a **full sync** (RDB snapshot) or **partial sync** (backlog delta on reconnect). Write commands are then streamed in real time; TCP errors remove disconnected replicas and trigger reconnects.
+On connect, the replica performs a **full sync** or **partial sync** from the backlog on reconnect. Write commands are then streamed in real time; TCP errors remove disconnected replicas and trigger reconnects.
 
 ## Configuration
 
@@ -156,41 +154,39 @@ replication:
   backlog_size: 1048576
 
 persistence:
-  aof:
+  wal:
     enabled: true
-    filename: "appendonly.aof"
+    filename: "valkeydb.wal"
     rewrite_interval: 3600
     max_size_mb: 64
-  rdb:
-    enabled: true
-    filename: "dump.rdb"
+  snapshot:
+    enabled: false
+    filename: "dump.vksp"
 
 datastructure:
   expiration:
-    max_sample_size: 20
-    max_sample_rounds: 3
     check_interval: 1
 
 memory:
   key_limit: 5000000     # unlimited if not set
-  evict_strategy: "lru"  # lru, lfu, evict_first
+  evict_strategy: "lru"  # empty or lru
 
 logging:
   level: "info"
   verbose_persistence: true
 ```
 
+When WAL and disk snapshots are enabled together, recovery restores the snapshot and replays the WAL suffix after its included byte offset. Automatic WAL rewrite is disabled in this mode so offsets never change underneath an existing snapshot. Full replication sync uses the same snapshot codec.
+
 For an authenticated primary, the replica's `replication.password` must match the primary's `server.auth`. `replication.username` may be empty or `default`; custom ACL users are not implemented yet.
 
 ### Memory Eviction
 
-When `key_limit` is exceeded, keys are evicted based on `evict_strategy`:
+When `key_limit` is exceeded and `evict_strategy` is `lru`, the least recently used key is evicted.
 
-| Strategy        | Behavior                               |
-| --------------- | -------------------------------------- |
-| `lru`           | Evict least recently accessed key      |
-| `lfu`           | Evict key with lowest access frequency |
-| `evict_first`   | Evict earliest inserted key            |
+| Strategy | Behavior                          |
+| -------- | --------------------------------- |
+| `lru`    | Evict least recently accessed key |
 
 ## Docker
 

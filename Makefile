@@ -24,4 +24,4 @@ test-cover:
 	@go tool cover -func=coverage.out
 
 clean:
-	@rm -rf bin/ coverage.out *.aof *.rdb test_*
+	@rm -rf bin/ coverage.out *.wal *.rdb test_*
