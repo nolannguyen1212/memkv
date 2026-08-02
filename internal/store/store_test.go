@@ -104,6 +104,48 @@ func TestRestoreIsAtomicAndCopiesPayloads(t *testing.T) {
 	}
 }
 
+func TestRestoreRemovesExpiredKeysFromFIFO(t *testing.T) {
+	createdAt := time.Unix(100, 0)
+	source := New(Config{})
+	source.SetString("expired", "old", createdAt.Add(time.Second))
+	source.SetString("live", "current", time.Time{})
+	state := source.Snapshot()
+	target := New(Config{})
+
+	if err := target.Restore(state, createdAt.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, exists := target.Dictionary.Get("expired"); exists {
+		t.Fatal("expired key was restored")
+	}
+
+	if value, exists := target.Dictionary.Get("live"); !exists || value != "current" {
+		t.Fatalf("live value = %q, exists = %v", value, exists)
+	}
+
+	if keys := target.Capacity.Keys(); len(keys) != 1 || keys[0] != "live" {
+		t.Fatalf("FIFO keys = %v, want [live]", keys)
+	}
+}
+
+func TestRestoreRejectsUnknownFIFOKey(t *testing.T) {
+	source := New(Config{})
+	source.SetString("live", "current", time.Time{})
+	state := source.Snapshot()
+	state.FIFO = append(state.FIFO, "unknown")
+	target := New(Config{})
+	target.SetString("existing", "unchanged", time.Time{})
+
+	if err := target.Restore(state, time.Now()); err == nil {
+		t.Fatal("Restore() accepted an unknown FIFO key")
+	}
+
+	if value, exists := target.Dictionary.Get("existing"); !exists || value != "unchanged" {
+		t.Fatalf("existing value = %q, exists = %v", value, exists)
+	}
+}
+
 func TestVersionRemainsMonotonicAcrossDeleteAndRecreate(t *testing.T) {
 	database := New(Config{})
 	database.SetString("key", "first", time.Time{})

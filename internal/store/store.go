@@ -202,6 +202,17 @@ func (store *Store) Restore(state LogicalSnapshot, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	fifo := state.FIFO
+
+	if len(fifo) == 0 && len(entries) > 0 {
+		fifo = sortedEntryKeys(entries)
+	} else {
+		fifo = removeExpiredFIFOKeys(fifo, state.Keyspace, entries, now)
+	}
+
+	if err := validateFIFO(fifo, entries); err != nil {
+		return err
+	}
 
 	store.entries = entries
 	store.versions = versions
@@ -212,18 +223,35 @@ func (store *Store) Restore(state LogicalSnapshot, now time.Time) error {
 	}
 
 	store.nextExpirationCheck = now.Add(store.expirationCheckInterval)
-	fifo := state.FIFO
-
-	if len(fifo) == 0 && len(entries) > 0 {
-		fifo = sortedEntryKeys(entries)
-	}
-
-	if err := validateFIFO(fifo, entries); err != nil {
-		return err
-	}
 
 	store.Capacity.Restore(fifo)
 	return nil
+}
+
+func removeExpiredFIFOKeys(
+	keys []string,
+	metadata map[string]KeyMetadata,
+	entries map[string]*Entry,
+	now time.Time,
+) []string {
+	restored := make([]string, 0, len(keys))
+
+	for _, key := range keys {
+		if _, exists := entries[key]; exists {
+			restored = append(restored, key)
+			continue
+		}
+
+		keyMetadata, exists := metadata[key]
+
+		if exists && !keyMetadata.ExpiredAt.IsZero() && !keyMetadata.ExpiredAt.After(now) {
+			continue
+		}
+
+		restored = append(restored, key)
+	}
+
+	return restored
 }
 
 func (store *Store) Clone(now time.Time) (*Store, error) {
