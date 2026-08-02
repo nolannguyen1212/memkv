@@ -4,11 +4,9 @@ import "testing"
 
 func TestEvictionLRU(t *testing.T) {
 	limit := 3
-	var evicted string
 	em := NewEvictionManager(EvictionConfig{
 		Strategy: EvictLRU,
 		KeyLimit: &limit,
-		OnEvict:  func(k string) { evicted = k },
 	})
 
 	em.RecordInsert("a")
@@ -16,9 +14,11 @@ func TestEvictionLRU(t *testing.T) {
 	em.RecordInsert("c")
 	em.RecordInsert("d")
 
-	em.EvictOne()
-	if evicted != "a" {
-		t.Errorf("Expected 'a' evicted, got '%s'", evicted)
+	if candidate := em.NextEviction(); candidate != "a" {
+		t.Errorf("NextEviction() = %q, want %q", candidate, "a")
+	}
+	if em.KeyCount() != 4 {
+		t.Fatalf("NextEviction removed candidate, key count = %d", em.KeyCount())
 	}
 }
 

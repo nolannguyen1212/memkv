@@ -1,7 +1,5 @@
 package store
 
-import "sort"
-
 type Deque[T any] struct {
 	elements []T
 	head     int
@@ -64,20 +62,6 @@ func (d *Deque[T]) PopBack() (T, bool) {
 
 func (d *Deque[T]) At(index int) T {
 	return d.elements[(d.head+index)%d.capacity]
-}
-
-func (d *Deque[T]) Sort(less func(a, b T) bool) {
-	if d.IsEmpty() {
-		return
-	}
-	sorted := make([]T, d.length)
-	for i := 0; i < d.length; i++ {
-		sorted[i] = d.At(i)
-	}
-	sort.Slice(sorted, func(i, j int) bool { return less(sorted[i], sorted[j]) })
-	d.head = 0
-	d.tail = d.length
-	copy(d.elements, sorted)
 }
 
 func (d *Deque[T]) grow() {

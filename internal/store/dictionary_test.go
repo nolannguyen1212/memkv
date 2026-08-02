@@ -1,45 +1,31 @@
 package store
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
-func TestDictionarySetGet(t *testing.T) {
-	d := NewDictionary(DefaultExpirationConfig)
-	d.Set("k1", "v1", 0)
+func TestDictionarySetGetAndDelete(t *testing.T) {
+	database := New(Config{})
+	dictionary := database.Dictionary
+	dictionary.Set("key", "value")
 
-	v, ok := d.Get("k1")
-
-	if !ok || v != "v1" {
-		t.Errorf("Expected v1, got %s", v)
+	value, exists := dictionary.Get("key")
+	if !exists || value != "value" {
+		t.Fatalf("Get() = %q, %v", value, exists)
+	}
+	if deleted := database.DeleteKey("key"); !deleted {
+		t.Fatal("DeleteKey() = false, want true")
+	}
+	if _, exists := dictionary.Get("key"); exists {
+		t.Fatal("deleted key still exists")
 	}
 }
 
-func TestDictionaryExpire(t *testing.T) {
-	d := NewDictionary(DefaultExpirationConfig)
-	d.Set("k1", "v1", 50*time.Millisecond)
+func TestDictionarySnapshotIsIndependent(t *testing.T) {
+	dictionary := New(Config{}).Dictionary
+	dictionary.Set("key", "value")
+	snapshot := dictionary.Snapshot()
+	dictionary.Set("key", "updated")
 
-	time.Sleep(100 * time.Millisecond)
-
-	_, ok := d.Get("k1")
-	if ok {
-		t.Error("Key should be expired")
-	}
-}
-
-func TestDictionaryTTL(t *testing.T) {
-	d := NewDictionary(DefaultExpirationConfig)
-	d.Set("k1", "v1", 0)
-	d.Set("k2", "v2", 10*time.Second)
-
-	if d.TTL("k1") != TTLNoExpire {
-		t.Error("Expected no expire")
-	}
-	if d.TTL("k2") < 9 {
-		t.Error("Expected ~10s TTL")
-	}
-	if d.TTL("notexist") != TTLNotFound {
-		t.Error("Expected not found")
+	if snapshot["key"].Value != "value" {
+		t.Fatalf("snapshot changed to %q", snapshot["key"].Value)
 	}
 }

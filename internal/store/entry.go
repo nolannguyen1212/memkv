@@ -7,21 +7,39 @@ const (
 	TTLNoExpire int64 = -1
 )
 
+type Status uint8
+
+const (
+	StatusMissing Status = iota
+	StatusFound
+	StatusWrongType
+)
+
+type KeyType string
+
+const (
+	KeyTypeString    KeyType = "string"
+	KeyTypeSet       KeyType = "set"
+	KeyTypeList      KeyType = "list"
+	KeyTypeHash      KeyType = "hash"
+	KeyTypeSortedSet KeyType = "zset"
+)
+
 type Entry struct {
+	Type      KeyType
 	Value     string
+	Members   map[string]struct{}
+	List      *Deque[string]
+	Hash      map[string]string
+	SortedSet *sortedSetEntry
 	ExpiredAt time.Time
 	Version   uint64
 }
 
+type StringEntry struct {
+	Value string
+}
+
 type SetEntry struct {
-	Members   map[string]struct{}
-	ExpiredAt time.Time
-}
-
-func (entry Entry) IsExpired() bool {
-	return !entry.ExpiredAt.IsZero() && time.Now().After(entry.ExpiredAt)
-}
-
-func (entry SetEntry) IsExpired() bool {
-	return !entry.ExpiredAt.IsZero() && time.Now().After(entry.ExpiredAt)
+	Members map[string]struct{}
 }

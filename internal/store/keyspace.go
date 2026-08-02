@@ -1,18 +1,8 @@
 package store
 
 import (
-	"sync"
+	"container/heap"
 	"time"
-)
-
-type KeyType string
-
-const (
-	KeyTypeString    KeyType = "string"
-	KeyTypeSet       KeyType = "set"
-	KeyTypeList      KeyType = "list"
-	KeyTypeHash      KeyType = "hash"
-	KeyTypeSortedSet KeyType = "zset"
 )
 
 type KeyMetadata struct {
@@ -21,212 +11,170 @@ type KeyMetadata struct {
 	ExpiredAt time.Time
 }
 
-// Keyspace is the authoritative catalog for key type, version, and expiry.
-// Concrete data structures only own the payload associated with a key.
 type Keyspace struct {
-	mutex        sync.RWMutex
-	entries      map[string]KeyMetadata
-	versions     map[string]uint64
-	onExpire     func(string)
-	interval     time.Duration
-	runExclusive func(func())
+	store    *Store
+	onExpire func(string)
 }
 
-func NewKeyspace(interval time.Duration, onExpire func(string), runExclusive func(func())) *Keyspace {
-	if interval <= 0 {
-		interval = DefaultExpirationConfig.CheckInterval
-	}
-	keyspace := &Keyspace{
-		entries:      make(map[string]KeyMetadata),
-		versions:     make(map[string]uint64),
-		onExpire:     onExpire,
-		interval:     interval,
-		runExclusive: runExclusive,
-	}
-	go keyspace.runExpirationLoop()
-	return keyspace
+func NewKeyspace(store *Store, onExpire func(string)) *Keyspace {
+	return &Keyspace{store: store, onExpire: onExpire}
 }
 
 func (keyspace *Keyspace) Claim(key string, keyType KeyType, replace bool) (KeyType, bool) {
 	keyspace.expireIfNeeded(key)
-
-	keyspace.mutex.Lock()
-	defer keyspace.mutex.Unlock()
-	entry, exists := keyspace.entries[key]
-	if exists && entry.Type != keyType && !replace {
-		return entry.Type, false
-	}
+	entry, exists := keyspace.store.entries[key]
 	if !exists {
-		keyspace.entries[key] = KeyMetadata{Type: keyType, Version: keyspace.versions[key]}
+		keyspace.store.entries[key] = &Entry{Type: keyType, Version: keyspace.store.versions[key]}
 		return "", true
+	}
+	if entry.Type != keyType && !replace {
+		return entry.Type, false
 	}
 	if entry.Type == keyType {
 		if replace {
 			entry.ExpiredAt = time.Time{}
-			keyspace.entries[key] = entry
 		}
 		return "", true
 	}
 	oldType := entry.Type
-	entry.Type = keyType
-	entry.ExpiredAt = time.Time{}
-	keyspace.entries[key] = entry
+	keyspace.store.entries[key] = &Entry{Type: keyType, Version: keyspace.store.versions[key]}
 	return oldType, true
 }
 
 func (keyspace *Keyspace) Type(key string) (KeyType, bool) {
 	keyspace.expireIfNeeded(key)
-	keyspace.mutex.RLock()
-	defer keyspace.mutex.RUnlock()
-	entry, exists := keyspace.entries[key]
-	return entry.Type, exists
+	entry, exists := keyspace.store.entries[key]
+	if !exists {
+		return "", false
+	}
+	return entry.Type, true
 }
 
 func (keyspace *Keyspace) BumpVersion(key string) uint64 {
-	keyspace.mutex.Lock()
-	defer keyspace.mutex.Unlock()
-	keyspace.versions[key]++
-	if entry, exists := keyspace.entries[key]; exists {
-		entry.Version = keyspace.versions[key]
-		keyspace.entries[key] = entry
+	keyspace.store.versions[key]++
+	if entry := keyspace.store.entries[key]; entry != nil {
+		entry.Version = keyspace.store.versions[key]
 	}
-	return keyspace.versions[key]
+	return keyspace.store.versions[key]
 }
 
 func (keyspace *Keyspace) Version(key string) uint64 {
 	keyspace.expireIfNeeded(key)
-	keyspace.mutex.RLock()
-	defer keyspace.mutex.RUnlock()
-	return keyspace.versions[key]
+	return keyspace.store.versions[key]
 }
 
 func (keyspace *Keyspace) Delete(key string) bool {
-	keyspace.mutex.Lock()
-	_, exists := keyspace.entries[key]
-	if exists {
-		delete(keyspace.entries, key)
-		keyspace.versions[key]++
-	}
-	keyspace.mutex.Unlock()
-	return exists
-}
-
-func (keyspace *Keyspace) RemoveIfType(key string, keyType KeyType) bool {
-	keyspace.mutex.Lock()
-	defer keyspace.mutex.Unlock()
-	entry, exists := keyspace.entries[key]
-	if !exists || entry.Type != keyType {
+	if _, exists := keyspace.store.entries[key]; !exists {
 		return false
 	}
-	delete(keyspace.entries, key)
+	delete(keyspace.store.entries, key)
+	keyspace.BumpVersion(key)
 	return true
 }
 
-func (keyspace *Keyspace) Expire(key string, ttl time.Duration) bool {
-	return keyspace.ExpireAt(key, time.Now().Add(ttl))
+func (keyspace *Keyspace) RemoveIfType(key string, keyType KeyType) bool {
+	entry := keyspace.store.entries[key]
+	if entry == nil || entry.Type != keyType {
+		return false
+	}
+	delete(keyspace.store.entries, key)
+	return true
 }
 
 func (keyspace *Keyspace) ExpireAt(key string, at time.Time) bool {
-	keyspace.mutex.Lock()
-	entry, exists := keyspace.entries[key]
-	if !exists {
-		keyspace.mutex.Unlock()
+	entry := keyspace.store.entries[key]
+	if entry == nil {
 		return false
 	}
-	if !at.After(time.Now()) {
-		delete(keyspace.entries, key)
-		keyspace.versions[key]++
-		keyspace.mutex.Unlock()
-		keyspace.expirePayload(key)
+	keyspace.BumpVersion(key)
+	if !at.After(keyspace.store.Now()) {
+		delete(keyspace.store.entries, key)
+		keyspace.expired(key)
 		return true
 	}
 	entry.ExpiredAt = at
-	keyspace.entries[key] = entry
-	keyspace.mutex.Unlock()
+	keyspace.store.scheduleExpiration(key, entry)
 	return true
 }
 
 func (keyspace *Keyspace) TTL(key string) int64 {
 	keyspace.expireIfNeeded(key)
-	keyspace.mutex.RLock()
-	defer keyspace.mutex.RUnlock()
-	entry, exists := keyspace.entries[key]
-	if !exists {
+	entry := keyspace.store.entries[key]
+	if entry == nil {
 		return TTLNotFound
 	}
 	if entry.ExpiredAt.IsZero() {
 		return TTLNoExpire
 	}
-	return int64(time.Until(entry.ExpiredAt).Seconds())
+	return int64(entry.ExpiredAt.Sub(keyspace.store.Now()).Seconds())
 }
 
 func (keyspace *Keyspace) Snapshot() map[string]KeyMetadata {
-	keyspace.expireAll()
-	keyspace.mutex.RLock()
-	defer keyspace.mutex.RUnlock()
-	result := make(map[string]KeyMetadata, len(keyspace.entries))
-	for key, entry := range keyspace.entries {
-		result[key] = entry
+	keyspace.expireAll(keyspace.store.Now())
+	snapshot := make(map[string]KeyMetadata, len(keyspace.store.entries))
+	for key, entry := range keyspace.store.entries {
+		snapshot[key] = KeyMetadata{
+			Type:      entry.Type,
+			Version:   entry.Version,
+			ExpiredAt: entry.ExpiredAt,
+		}
 	}
-	return result
+	return snapshot
 }
 
 func (keyspace *Keyspace) Restore(key string, metadata KeyMetadata) {
-	if !metadata.ExpiredAt.IsZero() && !metadata.ExpiredAt.After(time.Now()) {
+	if !metadata.ExpiredAt.IsZero() && !metadata.ExpiredAt.After(keyspace.store.Now()) {
 		return
 	}
-	keyspace.mutex.Lock()
-	defer keyspace.mutex.Unlock()
-	keyspace.entries[key] = metadata
-	if metadata.Version > keyspace.versions[key] {
-		keyspace.versions[key] = metadata.Version
+	keyspace.store.entries[key] = &Entry{
+		Type:      metadata.Type,
+		Version:   metadata.Version,
+		ExpiredAt: metadata.ExpiredAt,
 	}
+	keyspace.store.versions[key] = metadata.Version
 }
 
 func (keyspace *Keyspace) expireIfNeeded(key string) {
-	keyspace.mutex.Lock()
-	entry, exists := keyspace.entries[key]
-	if !exists || entry.ExpiredAt.IsZero() || entry.ExpiredAt.After(time.Now()) {
-		keyspace.mutex.Unlock()
+	entry := keyspace.store.entries[key]
+	if entry == nil || entry.ExpiredAt.IsZero() || entry.ExpiredAt.After(keyspace.store.Now()) {
 		return
 	}
-	delete(keyspace.entries, key)
-	keyspace.versions[key]++
-	keyspace.mutex.Unlock()
-	keyspace.expirePayload(key)
+	delete(keyspace.store.entries, key)
+	keyspace.BumpVersion(key)
+	keyspace.expired(key)
 }
 
-func (keyspace *Keyspace) expireAll() {
-	now := time.Now()
-	var expired []string
-	keyspace.mutex.Lock()
-	for key, entry := range keyspace.entries {
+func (keyspace *Keyspace) expireAll(now time.Time) {
+	for key, entry := range keyspace.store.entries {
 		if !entry.ExpiredAt.IsZero() && !entry.ExpiredAt.After(now) {
-			delete(keyspace.entries, key)
-			keyspace.versions[key]++
-			expired = append(expired, key)
+			delete(keyspace.store.entries, key)
+			keyspace.BumpVersion(key)
+			keyspace.expired(key)
 		}
 	}
-	keyspace.mutex.Unlock()
-	for _, key := range expired {
-		keyspace.expirePayload(key)
+}
+
+func (keyspace *Keyspace) expireDue(now time.Time, limit int) {
+	for range limit {
+		if len(keyspace.store.expirations) == 0 || keyspace.store.expirations[0].at > now.UnixMilli() {
+			return
+		}
+		item := heap.Pop(&keyspace.store.expirations).(expirationItem)
+		entry := keyspace.store.entries[item.key]
+		if entry == nil || entry.Version != item.version || entry.ExpiredAt.UnixMilli() != item.at {
+			continue
+		}
+		delete(keyspace.store.entries, item.key)
+		keyspace.BumpVersion(item.key)
+		keyspace.expired(item.key)
 	}
 }
 
-func (keyspace *Keyspace) expirePayload(key string) {
+func (keyspace *Keyspace) expired(key string) {
 	if keyspace.onExpire != nil {
 		keyspace.onExpire(key)
 	}
-}
-
-func (keyspace *Keyspace) runExpirationLoop() {
-	ticker := time.NewTicker(keyspace.interval)
-	defer ticker.Stop()
-	for range ticker.C {
-		if keyspace.runExclusive == nil {
-			keyspace.expireAll()
-			continue
-		}
-		keyspace.runExclusive(keyspace.expireAll)
+	if keyspace.store.expirationHandler != nil {
+		keyspace.store.expirationHandler(key)
 	}
 }

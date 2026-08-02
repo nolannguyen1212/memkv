@@ -1,121 +1,110 @@
 package store
 
-import (
-	"strconv"
-	"sync"
-)
-
 type List struct {
-	mutex   sync.RWMutex
-	entries map[string]*Deque[string]
-}
-
-func NewList() *List {
-	return &List{entries: make(map[string]*Deque[string])}
+	store *Store
 }
 
 func (list *List) LeftPush(key string, values ...string) int {
-	list.mutex.Lock()
-	defer list.mutex.Unlock()
-
-	if list.entries[key] == nil {
-		list.entries[key] = NewDeque[string]()
+	entry := list.entry(key)
+	for _, value := range values {
+		entry.List.PushFront(value)
 	}
-	for _, v := range values {
-		list.entries[key].PushFront(v)
-	}
-	return list.entries[key].Length()
+	return entry.List.Length()
 }
 
 func (list *List) RightPush(key string, values ...string) int {
-	list.mutex.Lock()
-	defer list.mutex.Unlock()
+	entry := list.entry(key)
+	for _, value := range values {
+		entry.List.PushBack(value)
+	}
+	return entry.List.Length()
+}
 
-	if list.entries[key] == nil {
-		list.entries[key] = NewDeque[string]()
+func (list *List) entry(key string) *Entry {
+	entry := list.store.lookupEntry(key)
+	if entry == nil {
+		entry = &Entry{Type: KeyTypeList}
+		list.store.entries[key] = entry
 	}
-	for _, v := range values {
-		list.entries[key].PushBack(v)
+	if entry.List == nil {
+		entry.List = NewDeque[string]()
 	}
-	return list.entries[key].Length()
+	return entry
 }
 
 func (list *List) LeftPop(key string, count int) []string {
-	list.mutex.Lock()
-	defer list.mutex.Unlock()
-
-	d := list.entries[key]
-	if d == nil {
-		return []string{}
-	}
-
-	result := make([]string, 0, count)
-	for i := 0; i < count; i++ {
-		v, ok := d.PopFront()
-		if !ok {
-			break
-		}
-		result = append(result, v)
-	}
-	if d.IsEmpty() {
-		delete(list.entries, key)
-	}
-	return result
+	return list.pop(key, count, func(values *Deque[string]) (string, bool) {
+		return values.PopFront()
+	})
 }
 
 func (list *List) RightPop(key string, count int) []string {
-	list.mutex.Lock()
-	defer list.mutex.Unlock()
-
-	d := list.entries[key]
-	if d == nil {
-		return []string{}
-	}
-
-	result := make([]string, 0, count)
-	for i := 0; i < count; i++ {
-		v, ok := d.PopBack()
-		if !ok {
-			break
-		}
-		result = append(result, v)
-	}
-	if d.IsEmpty() {
-		delete(list.entries, key)
-	}
-	return result
+	return list.pop(key, count, func(values *Deque[string]) (string, bool) {
+		return values.PopBack()
+	})
 }
 
-func (list *List) DeleteKey(key string) bool {
-	list.mutex.Lock()
-	defer list.mutex.Unlock()
-	if _, exists := list.entries[key]; !exists {
-		return false
+func (list *List) pop(key string, count int, pop func(*Deque[string]) (string, bool)) []string {
+	entry := list.store.lookupEntry(key)
+	if entry == nil || entry.Type != KeyTypeList || entry.List == nil {
+		return []string{}
 	}
-	delete(list.entries, key)
-	return true
+	values := make([]string, 0, count)
+	for range count {
+		value, exists := pop(entry.List)
+		if !exists {
+			break
+		}
+		values = append(values, value)
+	}
+	return values
 }
 
 func (list *List) Length(key string) int {
-	list.mutex.RLock()
-	defer list.mutex.RUnlock()
-
-	if list.entries[key] == nil {
+	entry := list.store.lookupEntry(key)
+	if entry == nil || entry.Type != KeyTypeList || entry.List == nil {
 		return 0
 	}
-	return list.entries[key].Length()
+	return entry.List.Length()
+}
+
+func (list *List) PeekLeft(key string, count int) []string {
+	entry := list.store.lookupEntry(key)
+	if entry == nil || entry.Type != KeyTypeList || entry.List == nil || count <= 0 {
+		return []string{}
+	}
+	if count > entry.List.Length() {
+		count = entry.List.Length()
+	}
+	values := make([]string, count)
+	for index := range count {
+		values[index] = entry.List.At(index)
+	}
+	return values
+}
+
+func (list *List) PeekRight(key string, count int) []string {
+	entry := list.store.lookupEntry(key)
+	if entry == nil || entry.Type != KeyTypeList || entry.List == nil || count <= 0 {
+		return []string{}
+	}
+	if count > entry.List.Length() {
+		count = entry.List.Length()
+	}
+	values := make([]string, count)
+	for index := range count {
+		values[index] = entry.List.At(entry.List.Length() - index - 1)
+	}
+	return values
 }
 
 func (list *List) Range(key string, start, stop int) ([]string, bool) {
-	list.mutex.RLock()
-	defer list.mutex.RUnlock()
-
-	d := list.entries[key]
-	if d == nil || d.Length() == 0 {
+	entry := list.store.lookupEntry(key)
+	if entry == nil || entry.Type != KeyTypeList || entry.List == nil || entry.List.IsEmpty() {
 		return []string{}, false
 	}
 
-	length := d.Length()
+	length := entry.List.Length()
 	if start < 0 {
 		start += length
 	}
@@ -132,57 +121,24 @@ func (list *List) Range(key string, start, stop int) ([]string, bool) {
 		return []string{}, true
 	}
 
-	result := make([]string, 0, stop-start+1)
-	for i := start; i <= stop; i++ {
-		result = append(result, d.At(i))
+	values := make([]string, 0, stop-start+1)
+	for index := start; index <= stop; index++ {
+		values = append(values, entry.List.At(index))
 	}
-	return result, true
-}
-
-func (list *List) Sort(key string, ascending, alpha bool) {
-	list.mutex.Lock()
-	defer list.mutex.Unlock()
-
-	d := list.entries[key]
-	if d == nil {
-		return
-	}
-
-	d.Sort(func(a, b string) bool {
-		less := compareStrings(a, b, alpha)
-		if ascending {
-			return less
-		}
-		return !less
-	})
+	return values, true
 }
 
 func (list *List) Snapshot() map[string][]string {
-	list.mutex.RLock()
-	defer list.mutex.RUnlock()
-
-	snapshot := make(map[string][]string, len(list.entries))
-	for key, d := range list.entries {
-		if d == nil || d.Length() == 0 {
+	snapshot := make(map[string][]string)
+	for key, entry := range list.store.entries {
+		if entry.Type != KeyTypeList || entry.List == nil || entry.List.IsEmpty() {
 			continue
 		}
-		values := make([]string, d.Length())
-		for i := 0; i < d.Length(); i++ {
-			values[i] = d.At(i)
+		values := make([]string, entry.List.Length())
+		for index := range values {
+			values[index] = entry.List.At(index)
 		}
 		snapshot[key] = values
 	}
 	return snapshot
-}
-
-func compareStrings(a, b string, alpha bool) bool {
-	if alpha {
-		return a < b
-	}
-	aNum, aErr := strconv.ParseFloat(a, 64)
-	bNum, bErr := strconv.ParseFloat(b, 64)
-	if aErr != nil || bErr != nil {
-		return a < b
-	}
-	return aNum < bNum
 }

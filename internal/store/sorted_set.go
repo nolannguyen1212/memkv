@@ -1,291 +1,154 @@
 package store
 
-import (
-	"math/rand"
-	"sync"
-)
-
-const (
-	skipListMaxLevel    = 32
-	skipListProbability = 0.25
-)
+import "sort"
 
 type ScoreMember struct {
 	Score  float64
 	Member string
 }
 
-type skipNode struct {
-	member  string
-	score   float64
-	forward []*skipNode
-	span    []int
-}
-
-type skipList struct {
-	header *skipNode
-	tail   *skipNode
-	length int
-	level  int
-}
-
 type sortedSetEntry struct {
-	list        *skipList
-	memberScore map[string]float64
+	scores map[string]float64
+	items  []ScoreMember
 }
 
 type SortedSet struct {
-	mutex   sync.RWMutex
-	entries map[string]*sortedSetEntry
-}
-
-func NewSortedSet() *SortedSet {
-	return &SortedSet{entries: make(map[string]*sortedSetEntry)}
-}
-
-func newSkipNode(level int, score float64, member string) *skipNode {
-	return &skipNode{
-		member:  member,
-		score:   score,
-		forward: make([]*skipNode, level),
-		span:    make([]int, level),
-	}
-}
-
-func newSkipList() *skipList {
-	return &skipList{
-		header: newSkipNode(skipListMaxLevel, 0, ""),
-		level:  1,
-	}
-}
-
-func randomLevel() int {
-	level := 1
-	for rand.Float64() < skipListProbability && level < skipListMaxLevel {
-		level++
-	}
-	return level
-}
-
-func (sl *skipList) insert(score float64, member string) {
-	update := make([]*skipNode, skipListMaxLevel)
-	rank := make([]int, skipListMaxLevel)
-	current := sl.header
-
-	for i := sl.level - 1; i >= 0; i-- {
-		if i == sl.level-1 {
-			rank[i] = 0
-		} else {
-			rank[i] = rank[i+1]
-		}
-		for current.forward[i] != nil &&
-			(current.forward[i].score < score ||
-				(current.forward[i].score == score && current.forward[i].member < member)) {
-			rank[i] += current.span[i]
-			current = current.forward[i]
-		}
-		update[i] = current
-	}
-
-	level := randomLevel()
-	if level > sl.level {
-		for i := sl.level; i < level; i++ {
-			rank[i] = 0
-			update[i] = sl.header
-			update[i].span[i] = sl.length
-		}
-		sl.level = level
-	}
-
-	node := newSkipNode(level, score, member)
-	for i := 0; i < level; i++ {
-		node.forward[i] = update[i].forward[i]
-		update[i].forward[i] = node
-		node.span[i] = update[i].span[i] - (rank[0] - rank[i])
-		update[i].span[i] = (rank[0] - rank[i]) + 1
-	}
-	for i := level; i < sl.level; i++ {
-		update[i].span[i]++
-	}
-
-	if node.forward[0] == nil {
-		sl.tail = node
-	}
-	sl.length++
-}
-
-func (sl *skipList) delete(score float64, member string) bool {
-	update := make([]*skipNode, skipListMaxLevel)
-	current := sl.header
-
-	for i := sl.level - 1; i >= 0; i-- {
-		for current.forward[i] != nil &&
-			(current.forward[i].score < score ||
-				(current.forward[i].score == score && current.forward[i].member < member)) {
-			current = current.forward[i]
-		}
-		update[i] = current
-	}
-
-	current = current.forward[0]
-	if current == nil || current.score != score || current.member != member {
-		return false
-	}
-
-	for i := 0; i < sl.level; i++ {
-		if update[i].forward[i] == current {
-			update[i].span[i] += current.span[i] - 1
-			update[i].forward[i] = current.forward[i]
-		} else {
-			update[i].span[i]--
-		}
-	}
-
-	for sl.level > 1 && sl.header.forward[sl.level-1] == nil {
-		sl.level--
-	}
-	sl.length--
-	return true
-}
-
-func (sl *skipList) getRank(score float64, member string) int {
-	rank := 0
-	current := sl.header
-
-	for i := sl.level - 1; i >= 0; i-- {
-		for current.forward[i] != nil &&
-			(current.forward[i].score < score ||
-				(current.forward[i].score == score && current.forward[i].member <= member)) {
-			rank += current.span[i]
-			current = current.forward[i]
-		}
-		if current.member == member && current.score == score {
-			return rank
-		}
-	}
-	return 0
+	store *Store
 }
 
 func (sortedSet *SortedSet) Add(key string, items ...ScoreMember) int {
-	sortedSet.mutex.Lock()
-	defer sortedSet.mutex.Unlock()
-
-	entry, exists := sortedSet.entries[key]
-	if !exists {
-		entry = &sortedSetEntry{
-			list:        newSkipList(),
-			memberScore: make(map[string]float64),
-		}
-		sortedSet.entries[key] = entry
+	entry := sortedSet.store.lookupEntry(key)
+	if entry == nil {
+		entry = &Entry{Type: KeyTypeSortedSet}
+		sortedSet.store.entries[key] = entry
+	}
+	if entry.SortedSet == nil {
+		entry.SortedSet = &sortedSetEntry{scores: make(map[string]float64)}
 	}
 
 	added := 0
+	changed := false
 	for _, item := range items {
-		if oldScore, exists := entry.memberScore[item.Member]; exists {
-			if oldScore != item.Score {
-				entry.list.delete(oldScore, item.Member)
-				entry.list.insert(item.Score, item.Member)
-				entry.memberScore[item.Member] = item.Score
-			}
-		} else {
-			entry.list.insert(item.Score, item.Member)
-			entry.memberScore[item.Member] = item.Score
+		oldScore, exists := entry.SortedSet.scores[item.Member]
+		if !exists {
 			added++
+			changed = true
+		} else if oldScore != item.Score {
+			changed = true
 		}
+		entry.SortedSet.scores[item.Member] = item.Score
+	}
+	if changed {
+		entry.SortedSet.rebuild()
 	}
 	return added
 }
 
 func (sortedSet *SortedSet) Remove(key string, members ...string) int {
-	sortedSet.mutex.Lock()
-	defer sortedSet.mutex.Unlock()
-
-	entry, exists := sortedSet.entries[key]
-	if !exists {
+	entry := sortedSet.entry(key)
+	if entry == nil {
 		return 0
 	}
 
 	removed := 0
 	for _, member := range members {
-		if score, exists := entry.memberScore[member]; exists {
-			entry.list.delete(score, member)
-			delete(entry.memberScore, member)
+		if _, exists := entry.scores[member]; exists {
+			delete(entry.scores, member)
 			removed++
 		}
 	}
-	if len(entry.memberScore) == 0 {
-		delete(sortedSet.entries, key)
+	if removed > 0 {
+		entry.rebuild()
 	}
 	return removed
 }
 
-func (sortedSet *SortedSet) DeleteKey(key string) bool {
-	sortedSet.mutex.Lock()
-	defer sortedSet.mutex.Unlock()
-	if _, exists := sortedSet.entries[key]; !exists {
-		return false
-	}
-	delete(sortedSet.entries, key)
-	return true
-}
-
 func (sortedSet *SortedSet) Score(key, member string) (float64, bool) {
-	sortedSet.mutex.RLock()
-	defer sortedSet.mutex.RUnlock()
-
-	entry, exists := sortedSet.entries[key]
-	if !exists {
+	entry := sortedSet.entry(key)
+	if entry == nil {
 		return 0, false
 	}
-	score, exists := entry.memberScore[member]
+	score, exists := entry.scores[member]
 	return score, exists
 }
 
 func (sortedSet *SortedSet) Rank(key, member string) (int, bool) {
-	sortedSet.mutex.RLock()
-	defer sortedSet.mutex.RUnlock()
-
-	entry, exists := sortedSet.entries[key]
-	if !exists {
+	entry := sortedSet.entry(key)
+	if entry == nil {
 		return 0, false
 	}
-	score, exists := entry.memberScore[member]
-	if !exists {
-		return 0, false
+	for rank, item := range entry.items {
+		if item.Member == member {
+			return rank, true
+		}
 	}
-	rank := entry.list.getRank(score, member)
-	if rank == 0 {
-		return 0, false
-	}
-	return rank - 1, true
+	return 0, false
 }
 
 func (sortedSet *SortedSet) Cardinality(key string) int {
-	sortedSet.mutex.RLock()
-	defer sortedSet.mutex.RUnlock()
-
-	entry, exists := sortedSet.entries[key]
-	if !exists {
+	entry := sortedSet.entry(key)
+	if entry == nil {
 		return 0
 	}
-	return entry.list.length
+	return len(entry.items)
+}
+
+func (sortedSet *SortedSet) CountMissing(key string, items ...ScoreMember) int {
+	seen := make(map[string]struct{}, len(items))
+	count := 0
+	for _, item := range items {
+		if _, duplicate := seen[item.Member]; duplicate {
+			continue
+		}
+		seen[item.Member] = struct{}{}
+		if _, exists := sortedSet.Score(key, item.Member); !exists {
+			count++
+		}
+	}
+	return count
+}
+
+func (sortedSet *SortedSet) CountExisting(key string, members ...string) int {
+	seen := make(map[string]struct{}, len(members))
+	count := 0
+	for _, member := range members {
+		if _, duplicate := seen[member]; duplicate {
+			continue
+		}
+		seen[member] = struct{}{}
+		if _, exists := sortedSet.Score(key, member); exists {
+			count++
+		}
+	}
+	return count
+}
+
+func (sortedSet *SortedSet) WouldChange(key string, items ...ScoreMember) bool {
+	updates := make(map[string]float64, len(items))
+	for _, item := range items {
+		updates[item.Member] = item.Score
+	}
+	for member, score := range updates {
+		current, exists := sortedSet.Score(key, member)
+		if !exists || current != score {
+			return true
+		}
+	}
+	return false
 }
 
 func (sortedSet *SortedSet) Range(key string, start, stop int) []string {
-	sortedSet.mutex.RLock()
-	defer sortedSet.mutex.RUnlock()
-
-	entry, exists := sortedSet.entries[key]
-	if !exists {
+	entry := sortedSet.entry(key)
+	if entry == nil {
 		return []string{}
 	}
 
-	length := entry.list.length
+	length := len(entry.items)
 	if start < 0 {
-		start = length + start
+		start += length
 	}
 	if stop < 0 {
-		stop = length + stop
+		stop += length
 	}
 	if start < 0 {
 		start = 0
@@ -293,33 +156,49 @@ func (sortedSet *SortedSet) Range(key string, start, stop int) []string {
 	if stop >= length {
 		stop = length - 1
 	}
-	if start > stop {
+	if start > stop || start >= length || stop < 0 {
 		return []string{}
 	}
 
-	result := make([]string, 0, stop-start+1)
-	current := entry.list.header.forward[0]
-	for i := 0; i < start && current != nil; i++ {
-		current = current.forward[0]
-	}
-	for i := start; i <= stop && current != nil; i++ {
-		result = append(result, current.member)
-		current = current.forward[0]
+	result := make([]string, stop-start+1)
+	for index, item := range entry.items[start : stop+1] {
+		result[index] = item.Member
 	}
 	return result
 }
 
 func (sortedSet *SortedSet) Snapshot() map[string]map[string]float64 {
-	sortedSet.mutex.RLock()
-	defer sortedSet.mutex.RUnlock()
-
-	snapshot := make(map[string]map[string]float64, len(sortedSet.entries))
-	for key, entry := range sortedSet.entries {
-		membersCopy := make(map[string]float64, len(entry.memberScore))
-		for member, score := range entry.memberScore {
-			membersCopy[member] = score
+	snapshot := make(map[string]map[string]float64)
+	for key, entry := range sortedSet.store.entries {
+		if entry.Type != KeyTypeSortedSet || entry.SortedSet == nil {
+			continue
 		}
-		snapshot[key] = membersCopy
+		members := make(map[string]float64, len(entry.SortedSet.scores))
+		for member, score := range entry.SortedSet.scores {
+			members[member] = score
+		}
+		snapshot[key] = members
 	}
 	return snapshot
+}
+
+func (sortedSet *SortedSet) entry(key string) *sortedSetEntry {
+	entry := sortedSet.store.lookupEntry(key)
+	if entry == nil || entry.Type != KeyTypeSortedSet {
+		return nil
+	}
+	return entry.SortedSet
+}
+
+func (entry *sortedSetEntry) rebuild() {
+	entry.items = make([]ScoreMember, 0, len(entry.scores))
+	for member, score := range entry.scores {
+		entry.items = append(entry.items, ScoreMember{Score: score, Member: member})
+	}
+	sort.Slice(entry.items, func(i, j int) bool {
+		if entry.items[i].Score == entry.items[j].Score {
+			return entry.items[i].Member < entry.items[j].Member
+		}
+		return entry.items[i].Score < entry.items[j].Score
+	})
 }
