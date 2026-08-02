@@ -1,4 +1,4 @@
-.PHONY: build run replica test clean
+.PHONY: build run replica test bench clean
 
 CONFIG ?= config.yaml
 REPLICA_CONFIG ?= config.replica.yaml
@@ -23,5 +23,8 @@ test-cover:
 	@go test -coverprofile=coverage.out ./...
 	@go tool cover -func=coverage.out
 
+bench:
+	@./scripts/benchmark.sh
+
 clean:
-	@rm -rf bin/ coverage.out *.wal *.rdb test_*
+	@rm -rf bin/ coverage.out *.wal *.vksp test_*

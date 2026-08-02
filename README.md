@@ -1,6 +1,6 @@
 # ValkeyDB
 
-A Redis-compatible learning database built from scratch in Go.
+A Redis-inspired learning database built from scratch in Go.
 
 ## Key Features
 
@@ -13,7 +13,9 @@ A Redis-compatible learning database built from scratch in Go.
   - Sorted Sets (Score map with deterministic sorted slice ordering)
 - **Memory Eviction**: Optional LRU eviction
 - **Persistence**: WAL and versioned, checksummed snapshots
+- **Commit Model**: Canonical mutation batches shared by runtime commits, WAL, and replication
 - **TTL Support**: Automatic key expiration
+- **Execution Model**: A bounded, single-owner engine loop orders commands, transactions, expiration, snapshots, and recovery events
 
 ## System Architecture
 
@@ -145,6 +147,11 @@ server:
   read_timeout: 300
   write_timeout: 300
   auth: secretpassword
+  resp:
+    max_bulk_length: 16777216
+    max_array_length: 1024
+    max_depth: 8
+    max_line_length: 65536
 
 replication:
   role: "primary"       # primary or replica
@@ -171,9 +178,6 @@ memory:
   key_limit: 5000000     # unlimited if not set
   evict_strategy: "lru"  # empty or lru
 
-logging:
-  level: "info"
-  verbose_persistence: true
 ```
 
 When WAL and disk snapshots are enabled together, recovery restores the snapshot and replays the WAL suffix after its included byte offset. Automatic WAL rewrite is disabled in this mode so offsets never change underneath an existing snapshot. Full replication sync uses the same snapshot codec.
@@ -194,3 +198,15 @@ When `key_limit` is exceeded and `evict_strategy` is `lru`, the least recently u
 docker build -t valkeydb:latest .
 docker run --rm -p 6379:6379 valkeydb:latest
 ```
+
+## Verification
+
+```bash
+make test
+go test -race ./...
+go vet ./...
+golangci-lint run ./...
+make bench
+```
+
+The included benchmarks are reproducible correctness/performance baselines, not a high-load or tail-latency claim.
