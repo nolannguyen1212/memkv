@@ -1,4 +1,4 @@
-module github.com/william1nguyen/valkeydb
+module github.com/william1nguyen/memkv
 
 go 1.25.1
 

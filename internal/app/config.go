@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/memkv/internal/resp"
 	"gopkg.in/yaml.v3"
 )
 

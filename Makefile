@@ -4,13 +4,13 @@ CONFIG ?= config.yaml
 REPLICA_CONFIG ?= config.replica.yaml
 
 build:
-	@go build -o bin/valkeydb ./cmd/valkeydb
+	@go build -o bin/memkv ./cmd/memkv
 
 run:
-	@go run ./cmd/valkeydb --config=$(CONFIG)
+	@go run ./cmd/memkv --config=$(CONFIG)
 
 replica:
-	@go run ./cmd/valkeydb --config=$(REPLICA_CONFIG)
+	@go run ./cmd/memkv --config=$(REPLICA_CONFIG)
 
 test:
 	@go test ./...

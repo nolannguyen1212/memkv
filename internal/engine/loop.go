@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/store"
+	"github.com/william1nguyen/memkv/internal/store"
 )
 
 const requestQueueCapacity = 1024

@@ -1,7 +1,7 @@
 package engine
 
 import (
-	"github.com/william1nguyen/valkeydb/internal/mutation"
+	"github.com/william1nguyen/memkv/internal/mutation"
 )
 
 type ResultType uint8

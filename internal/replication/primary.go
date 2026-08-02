@@ -5,8 +5,8 @@ import (
 	"io"
 	"net"
 
-	"github.com/william1nguyen/valkeydb/internal/snapshot"
-	"github.com/william1nguyen/valkeydb/internal/store"
+	"github.com/william1nguyen/memkv/internal/snapshot"
+	"github.com/william1nguyen/memkv/internal/store"
 )
 
 func (manager *Manager) HandlePSYNC(

@@ -19,7 +19,7 @@ replication:
 persistence:
   wal:
     enabled: true
-    filename: "valkeydb.wal"
+    filename: "memkv.wal"
     rewrite_interval: 3600
     max_size_mb: 64
   snapshot:

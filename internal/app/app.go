@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/engine"
-	"github.com/william1nguyen/valkeydb/internal/mutation"
-	"github.com/william1nguyen/valkeydb/internal/replication"
-	"github.com/william1nguyen/valkeydb/internal/server"
-	"github.com/william1nguyen/valkeydb/internal/snapshot"
-	"github.com/william1nguyen/valkeydb/internal/store"
-	"github.com/william1nguyen/valkeydb/internal/wal"
+	"github.com/william1nguyen/memkv/internal/engine"
+	"github.com/william1nguyen/memkv/internal/mutation"
+	"github.com/william1nguyen/memkv/internal/replication"
+	"github.com/william1nguyen/memkv/internal/server"
+	"github.com/william1nguyen/memkv/internal/snapshot"
+	"github.com/william1nguyen/memkv/internal/store"
+	"github.com/william1nguyen/memkv/internal/wal"
 )
 
 const shutdownTimeout = 10 * time.Second

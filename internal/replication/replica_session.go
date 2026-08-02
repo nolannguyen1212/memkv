@@ -6,7 +6,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/memkv/internal/resp"
 )
 
 type replicaSession struct {

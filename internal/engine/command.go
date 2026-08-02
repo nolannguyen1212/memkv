@@ -3,7 +3,7 @@ package engine
 import (
 	"strings"
 
-	"github.com/william1nguyen/valkeydb/internal/mutation"
+	"github.com/william1nguyen/memkv/internal/mutation"
 )
 
 type Command = mutation.Command

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/william1nguyen/valkeydb/internal/mutation"
+	"github.com/william1nguyen/memkv/internal/mutation"
 )
 
 type limitedWriter struct {

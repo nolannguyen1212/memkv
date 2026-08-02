@@ -11,8 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/william1nguyen/valkeydb/internal/mutation"
-	"github.com/william1nguyen/valkeydb/internal/store"
+	"github.com/william1nguyen/memkv/internal/mutation"
+	"github.com/william1nguyen/memkv/internal/store"
 )
 
 const (

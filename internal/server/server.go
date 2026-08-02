@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/engine"
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/memkv/internal/engine"
+	"github.com/william1nguyen/memkv/internal/resp"
 )
 
 const networkType = "tcp"

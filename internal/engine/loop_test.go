@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/william1nguyen/valkeydb/internal/store"
+	"github.com/william1nguyen/memkv/internal/store"
 )
 
 func startTestEngine(t *testing.T) (*Context, context.CancelFunc, <-chan error) {

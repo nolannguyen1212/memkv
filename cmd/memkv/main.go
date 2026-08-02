@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/william1nguyen/valkeydb/internal/app"
+	"github.com/william1nguyen/memkv/internal/app"
 )
 
 const defaultConfigPath = "config.yaml"
@@ -27,7 +27,7 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, logger *slog.Logger) error {
-	flags := flag.NewFlagSet("valkeydb", flag.ContinueOnError)
+	flags := flag.NewFlagSet("memkv", flag.ContinueOnError)
 	configPath := flags.String("config", defaultConfigPath, "Path to the YAML configuration file")
 
 	if err := flags.Parse(args); err != nil {
@@ -46,7 +46,7 @@ func run(ctx context.Context, args []string, logger *slog.Logger) error {
 		return fmt.Errorf("create application: %w", err)
 	}
 
-	logger.Info("starting ValkeyDB", "address", cfg.Server.Address)
+	logger.Info("starting MemKV", "address", cfg.Server.Address)
 
 	if err := application.Run(ctx); err != nil {
 		return fmt.Errorf("run application: %w", err)

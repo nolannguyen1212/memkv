@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/william1nguyen/valkeydb/internal/mutation"
-	"github.com/william1nguyen/valkeydb/internal/resp"
+	"github.com/william1nguyen/memkv/internal/mutation"
+	"github.com/william1nguyen/memkv/internal/resp"
 )
 
 const reconnectDelay = 2 * time.Second

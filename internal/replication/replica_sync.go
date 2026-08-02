@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/william1nguyen/valkeydb/internal/snapshot"
+	"github.com/william1nguyen/memkv/internal/snapshot"
 )
 
 func (manager *Manager) synchronize(session *replicaSession, restore ApplySnapshot) error {

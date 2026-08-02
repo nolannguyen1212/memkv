@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/william1nguyen/valkeydb/internal/app"
+	"github.com/william1nguyen/memkv/internal/app"
 )
 
 func TestLoadReturnsValidatedConfig(t *testing.T) {
@@ -143,7 +143,7 @@ func TestValidateRejectsReplicaPersistence(t *testing.T) {
 func TestValidateAcceptsSnapshotWithWALSuffixRecovery(t *testing.T) {
 	cfg := validConfig()
 	cfg.Persistence.WAL.Enabled = true
-	cfg.Persistence.WAL.Filename = "valkeydb.wal"
+	cfg.Persistence.WAL.Filename = "memkv.wal"
 	cfg.Persistence.Snapshot.Enabled = true
 	cfg.Persistence.Snapshot.Filename = "dump.vksp"
 

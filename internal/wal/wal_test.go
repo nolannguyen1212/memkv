@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/william1nguyen/valkeydb/internal/engine"
-	"github.com/william1nguyen/valkeydb/internal/mutation"
-	"github.com/william1nguyen/valkeydb/internal/resp"
-	"github.com/william1nguyen/valkeydb/internal/snapshot"
-	"github.com/william1nguyen/valkeydb/internal/store"
-	wallog "github.com/william1nguyen/valkeydb/internal/wal"
+	"github.com/william1nguyen/memkv/internal/engine"
+	"github.com/william1nguyen/memkv/internal/mutation"
+	"github.com/william1nguyen/memkv/internal/resp"
+	"github.com/william1nguyen/memkv/internal/snapshot"
+	"github.com/william1nguyen/memkv/internal/store"
+	wallog "github.com/william1nguyen/memkv/internal/wal"
 )
 
 func walCommand(value resp.Value) mutation.Command {
@@ -44,7 +44,7 @@ func newStore() *store.Store {
 }
 
 func TestWALReplaysListPopsAndSortedSetMutations(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	path := filepath.Join(t.TempDir(), "memkv.wal")
 	wal, err := wallog.Open(path, true)
 
 	if err != nil {
@@ -93,7 +93,7 @@ func TestWALReplaysListPopsAndSortedSetMutations(t *testing.T) {
 }
 
 func TestWALRewriteKeepsSortedSetsAndContinuesAppending(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	path := filepath.Join(t.TempDir(), "memkv.wal")
 	wal, err := wallog.Open(path, true)
 
 	if err != nil {
@@ -271,7 +271,7 @@ func TestSnapshotLoadRejectsTruncatedSnapshot(t *testing.T) {
 }
 
 func TestWALBatchRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	path := filepath.Join(t.TempDir(), "memkv.wal")
 	log, err := wallog.Open(path, true)
 
 	if err != nil {
@@ -352,7 +352,7 @@ func TestWALLoadRejectsCorruptRecord(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "valkeydb.wal")
+			path := filepath.Join(t.TempDir(), "memkv.wal")
 			log, err := wallog.Open(path, true)
 
 			if err != nil {
@@ -408,7 +408,7 @@ func TestWALLoadRejectsCorruptRecord(t *testing.T) {
 }
 
 func TestWALRepairTailDropsIncompleteFinalRecord(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	path := filepath.Join(t.TempDir(), "memkv.wal")
 	log, err := wallog.Open(path, true)
 
 	if err != nil {
@@ -470,7 +470,7 @@ func TestWALRepairTailDropsIncompleteFinalRecord(t *testing.T) {
 }
 
 func TestBatchReplayFailureDoesNotPartiallyApply(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	path := filepath.Join(t.TempDir(), "memkv.wal")
 	log, err := wallog.Open(path, true)
 
 	if err != nil {
@@ -523,7 +523,7 @@ func TestBatchReplayFailureDoesNotPartiallyApply(t *testing.T) {
 }
 
 func TestWALLoadFromCheckpointOffset(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "valkeydb.wal")
+	path := filepath.Join(t.TempDir(), "memkv.wal")
 	log, err := wallog.Open(path, true)
 
 	if err != nil {

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/william1nguyen/valkeydb/internal/store"
+	"github.com/william1nguyen/memkv/internal/store"
 )
 
 type faultFile struct {
