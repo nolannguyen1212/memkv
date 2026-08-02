@@ -216,6 +216,10 @@ func BootstrapExecute(connContext *ConnContext, name string, args []string) Resu
 func executeOwned(connContext *ConnContext, name string, args []string) Result {
 	command, exists := connContext.Registry.command(name)
 
+	if exists && isReadOnlyWrite(connContext, command) {
+		return Result{Type: ResultError, String: "READONLY You can't write against a read only replica."}
+	}
+
 	if shouldQueue(connContext, command, exists) {
 		if !exists {
 			connContext.Transaction.Dirty = true
@@ -237,10 +241,6 @@ func executeOwned(connContext *ConnContext, name string, args []string) Result {
 
 	if validationError := validateRegisteredCommand(name, command, args); validationError != nil {
 		return *validationError
-	}
-
-	if isReadOnlyWrite(connContext, command) {
-		return Result{Type: ResultError, String: "READONLY You can't write against a read only replica."}
 	}
 
 	if command.write && connContext.persistenceFailed.Load() {

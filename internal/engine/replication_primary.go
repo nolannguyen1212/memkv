@@ -36,6 +36,10 @@ func (connContext *ConnContext) SynchronizeReplica(args []string) Result {
 		return Result{Type: ResultError, String: "ERR replication not configured"}
 	}
 
+	if connContext.Replication.IsReplica() {
+		return Result{Type: ResultError, String: "ERR PSYNC is only available on a primary"}
+	}
+
 	if len(args) != 2 {
 		return wrongArgCountError("psync")
 	}
