@@ -115,6 +115,16 @@ func (store *Store) createEntry(key string, keyType KeyType) *Entry {
 	return entry
 }
 
+func (store *Store) entryForMutation(key string, keyType KeyType) (*Entry, bool) {
+	entry := store.lookupEntry(key)
+
+	if entry == nil {
+		return store.createEntry(key, keyType), true
+	}
+
+	return entry, entry.Type == keyType
+}
+
 func (store *Store) CheckType(key string, expected KeyType) Status {
 	actual, exists := store.Keyspace.Type(key)
 

@@ -50,6 +50,37 @@ func TestTypeReplacementRemovesPreviousPayload(t *testing.T) {
 	}
 }
 
+func TestMutationsPreserveExistingEntryType(t *testing.T) {
+	database := New(Config{})
+	database.SetString("key", "value", time.Time{})
+
+	if added := database.Set.Add("key", "member"); added != 0 {
+		t.Fatalf("Set.Add() = %d, want 0", added)
+	}
+
+	if length := database.List.RightPush("key", "item"); length != 0 {
+		t.Fatalf("List.RightPush() = %d, want 0", length)
+	}
+
+	if added := database.Hash.Set("key", "field", "value"); added != 0 {
+		t.Fatalf("Hash.Set() = %d, want 0", added)
+	}
+
+	if added := database.SortedSet.Add("key", ScoreMember{Member: "member", Score: 1}); added != 0 {
+		t.Fatalf("SortedSet.Add() = %d, want 0", added)
+	}
+
+	entry := database.entries["key"]
+
+	if entry.Type != KeyTypeString || entry.Value != "value" {
+		t.Fatalf("entry = %#v, want unchanged string", entry)
+	}
+
+	if entry.Members != nil || entry.List != nil || entry.Hash != nil || entry.SortedSet != nil {
+		t.Fatalf("entry gained another type payload: %#v", entry)
+	}
+}
+
 func TestMaintenanceExpiresUnifiedEntry(t *testing.T) {
 	database := New(Config{ExpirationCheckInterval: time.Millisecond})
 	database.SetString("key", "value", time.Time{})

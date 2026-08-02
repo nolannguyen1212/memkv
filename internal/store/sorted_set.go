@@ -17,10 +17,10 @@ type SortedSet struct {
 }
 
 func (sortedSet *SortedSet) Add(key string, items ...ScoreMember) int {
-	entry := sortedSet.store.lookupEntry(key)
+	entry, valid := sortedSet.store.entryForMutation(key, KeyTypeSortedSet)
 
-	if entry == nil {
-		entry = sortedSet.store.createEntry(key, KeyTypeSortedSet)
+	if !valid {
+		return 0
 	}
 
 	if entry.SortedSet == nil {

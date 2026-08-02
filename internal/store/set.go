@@ -5,10 +5,10 @@ type Set struct {
 }
 
 func (set *Set) Add(key string, members ...string) int {
-	entry := set.store.lookupEntry(key)
+	entry, valid := set.store.entryForMutation(key, KeyTypeSet)
 
-	if entry == nil {
-		entry = set.store.createEntry(key, KeyTypeSet)
+	if !valid {
+		return 0
 	}
 
 	if entry.Members == nil {

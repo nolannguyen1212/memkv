@@ -11,10 +11,10 @@ func (hash *Hash) Set(key string, fieldValues ...string) int {
 		return 0
 	}
 
-	entry := hash.store.lookupEntry(key)
+	entry, valid := hash.store.entryForMutation(key, KeyTypeHash)
 
-	if entry == nil {
-		entry = hash.store.createEntry(key, KeyTypeHash)
+	if !valid {
+		return 0
 	}
 
 	if entry.Hash == nil {

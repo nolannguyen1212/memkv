@@ -5,7 +5,11 @@ type List struct {
 }
 
 func (list *List) LeftPush(key string, values ...string) int {
-	entry := list.entry(key)
+	entry, valid := list.entryForMutation(key)
+
+	if !valid {
+		return 0
+	}
 
 	for _, value := range values {
 		entry.List.PushFront(value)
@@ -19,7 +23,11 @@ func (list *List) LeftPush(key string, values ...string) int {
 }
 
 func (list *List) RightPush(key string, values ...string) int {
-	entry := list.entry(key)
+	entry, valid := list.entryForMutation(key)
+
+	if !valid {
+		return 0
+	}
 
 	for _, value := range values {
 		entry.List.PushBack(value)
@@ -32,18 +40,18 @@ func (list *List) RightPush(key string, values ...string) int {
 	return entry.List.Length()
 }
 
-func (list *List) entry(key string) *Entry {
-	entry := list.store.lookupEntry(key)
+func (list *List) entryForMutation(key string) (*Entry, bool) {
+	entry, valid := list.store.entryForMutation(key, KeyTypeList)
 
-	if entry == nil {
-		entry = list.store.createEntry(key, KeyTypeList)
+	if !valid {
+		return nil, false
 	}
 
 	if entry.List == nil {
 		entry.List = NewDeque[string]()
 	}
 
-	return entry
+	return entry, true
 }
 
 func (list *List) LeftPop(key string, count int) []string {
