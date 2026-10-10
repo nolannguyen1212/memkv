@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/william1nguyen/memkv/internal/app"
+	"github.com/nolannguyen1212/memkv/internal/app"
 )
 
 const defaultConfigPath = "config.yaml"

@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/william1nguyen/memkv/internal/mutation"
-	"github.com/william1nguyen/memkv/internal/resp"
-	"github.com/william1nguyen/memkv/internal/snapshot"
-	"github.com/william1nguyen/memkv/internal/store"
+	"github.com/nolannguyen1212/memkv/internal/mutation"
+	"github.com/nolannguyen1212/memkv/internal/resp"
+	"github.com/nolannguyen1212/memkv/internal/snapshot"
+	"github.com/nolannguyen1212/memkv/internal/store"
 )
 
 func closeManagerAfterTest(t *testing.T, manager *Manager) {

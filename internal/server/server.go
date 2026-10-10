@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/william1nguyen/memkv/internal/engine"
-	"github.com/william1nguyen/memkv/internal/resp"
+	"github.com/nolannguyen1212/memkv/internal/engine"
+	"github.com/nolannguyen1212/memkv/internal/resp"
 )
 
 const networkType = "tcp"

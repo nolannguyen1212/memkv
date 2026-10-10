@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/william1nguyen/memkv/internal/mutation"
-	"github.com/william1nguyen/memkv/internal/resp"
-	"github.com/william1nguyen/memkv/internal/store"
+	"github.com/nolannguyen1212/memkv/internal/mutation"
+	"github.com/nolannguyen1212/memkv/internal/resp"
+	"github.com/nolannguyen1212/memkv/internal/store"
 )
 
 type Role int32

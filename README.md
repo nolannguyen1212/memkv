@@ -149,7 +149,7 @@ Requirements:
 - A RESP2 CLI such as `redis-cli` is optional but convenient for manual testing.
 
 ```bash
-git clone https://github.com/william1nguyen/memkv.git
+git clone https://github.com/nolannguyen1212/memkv.git
 cd memkv
 make build
 ```

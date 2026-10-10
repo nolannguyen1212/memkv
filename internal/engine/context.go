@@ -6,8 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/william1nguyen/memkv/internal/mutation"
-	"github.com/william1nguyen/memkv/internal/store"
+	"github.com/nolannguyen1212/memkv/internal/mutation"
+	"github.com/nolannguyen1212/memkv/internal/store"
 )
 
 type Handler func(connContext *ConnContext, args []string) Result

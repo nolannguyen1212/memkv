@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/william1nguyen/memkv/internal/store"
+	"github.com/nolannguyen1212/memkv/internal/store"
 )
 
 func registerStringCommands(registry *Registry) {

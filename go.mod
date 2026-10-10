@@ -1,4 +1,4 @@
-module github.com/william1nguyen/memkv
+module github.com/nolannguyen1212/memkv
 
 go 1.25.1
 

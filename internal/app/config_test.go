@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/william1nguyen/memkv/internal/app"
+	"github.com/nolannguyen1212/memkv/internal/app"
 )
 
 func TestLoadReturnsValidatedConfig(t *testing.T) {

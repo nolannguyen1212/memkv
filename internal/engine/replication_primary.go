@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/william1nguyen/memkv/internal/store"
+	"github.com/nolannguyen1212/memkv/internal/store"
 )
 
 func registerReplicationCommands(registry *Registry) {

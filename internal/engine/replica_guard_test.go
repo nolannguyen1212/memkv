@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/william1nguyen/memkv/internal/mutation"
-	"github.com/william1nguyen/memkv/internal/store"
+	"github.com/nolannguyen1212/memkv/internal/mutation"
+	"github.com/nolannguyen1212/memkv/internal/store"
 )
 
 type replicaReplicator struct {

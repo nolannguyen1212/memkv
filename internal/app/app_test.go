@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/william1nguyen/memkv/internal/app"
+	"github.com/nolannguyen1212/memkv/internal/app"
 )
 
 func TestApplicationStopsWithCanceledContext(t *testing.T) {
