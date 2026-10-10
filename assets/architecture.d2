@@ -1,0 +1,79 @@
+direction: right
+
+# Nodes inside the MemKV process share the internal style. Containers and
+# icons above labels are avoided because dagre then draws edges off-center.
+classes: {
+  internal: {
+    width: 220
+    height: 150
+    style: {
+      fill: "#E8EEFC"
+    }
+  }
+  external: {
+    width: 230
+    height: 150
+  }
+}
+
+cli: redis-cli {
+  class: external
+  icon: https://icons.terrastruct.com/dev%2Fredis.svg
+  icon.near: center-left
+  label.near: center-right
+}
+
+server: TCP server\none goroutine per connection {
+  class: internal
+  width: 360
+  icon: https://icons.terrastruct.com/essentials%2F092-network.svg
+  icon.near: center-left
+  label.near: center-right
+}
+
+queue: Request queue\n(bounded channel) {
+  class: internal
+  shape: queue
+}
+
+engine: Engine\nsingle goroutine {
+  class: internal
+  width: 260
+  icon: https://icons.terrastruct.com/dev%2Fgo.svg
+  icon.near: center-left
+  label.near: center-right
+  style.bold: true
+  style.font-size: 18
+}
+
+store: In-memory store {
+  class: internal
+  shape: cylinder
+}
+
+replication: Replication manager\n+ backlog {
+  class: internal
+  shape: queue
+}
+
+persistence: Persistence (optional)\nWAL + snapshot {
+  class: internal
+  shape: page
+  style.multiple: true
+}
+
+replicas: Replicas {
+  class: external
+  icon: https://icons.terrastruct.com/essentials%2F112-server.svg
+  icon.near: center-left
+  label.near: center-right
+  style.multiple: true
+}
+
+cli <-> server: RESP2 over TCP
+server -> queue: parsed command
+queue -> engine
+engine -> store: read / write
+engine -> replication: committed writes
+engine -> persistence: append + fsync
+replication -> replicas: async stream

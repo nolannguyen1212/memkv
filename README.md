@@ -12,22 +12,7 @@ Features:
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    Client[Client] --> Server
-
-    subgraph Network
-        Server[TCP server<br/>one goroutine per connection]
-    end
-
-    Server -->|parsed command| Queue[Request queue]
-    Queue --> Engine[Engine<br/>single goroutine]
-
-    Engine --> Store[In-memory store]
-    Engine --> Persistence[WAL + snapshot<br/>optional]
-    Engine --> Replication[Replication manager]
-    Replication --> Replicas[Replicas]
-```
+![MemKV architecture](assets/architecture.svg)
 
 ### One engine, no locks
 

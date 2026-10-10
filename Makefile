@@ -1,4 +1,4 @@
-.PHONY: build run replica test bench clean
+.PHONY: build run replica test bench diagram clean
 
 CONFIG ?= config.yaml
 REPLICA_CONFIG ?= config.replica.yaml
@@ -25,6 +25,9 @@ test-cover:
 
 bench:
 	@./scripts/benchmark.sh
+
+diagram:
+	@d2 --layout dagre --pad 24 assets/architecture.d2 assets/architecture.svg
 
 clean:
 	@rm -rf bin/ coverage.out *.wal *.mksp test_*
