@@ -23,11 +23,13 @@ type commandRequest struct {
 
 func (request commandRequest) handle(ctx *Context) {
 	ctx.Store.Maintain(ctx.Store.Now())
-	request.reply <- executeOwned(
+	appendsBefore := ctx.groupAppends()
+	result := executeOwned(
 		request.connection,
 		request.command.Name,
 		request.command.Args,
 	)
+	ctx.respond(request.reply, result, appendsBefore)
 }
 
 type snapshotRequest struct {
@@ -205,7 +207,7 @@ func (ctx *Context) Run(runContext context.Context) error {
 		case <-ticker.C:
 			ctx.Store.Maintain(ctx.Store.Now())
 		case current := <-ctx.events:
-			current.handle(ctx)
+			ctx.dispatch(current)
 		}
 	}
 }

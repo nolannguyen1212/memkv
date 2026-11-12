@@ -160,3 +160,77 @@ func validConfig() app.Config {
 		Datastructure: app.DatastructureConfig{Expiration: app.ExpirationConfig{CheckInterval: 1}},
 	}
 }
+
+func walConfig() app.Config {
+	cfg := validConfig()
+	cfg.Persistence.WAL = app.WALConfig{Enabled: true, Filename: "memkv.wal", RewriteInterval: 60}
+	return cfg
+}
+
+func TestWALDefaultsKeepFsyncAlwaysWithGroupCommit(t *testing.T) {
+	cfg := walConfig()
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := cfg.WALSyncPolicy(); got != "always" {
+		t.Fatalf("WALSyncPolicy() = %q, want always", got)
+	}
+
+	if !cfg.WALGroupCommit() {
+		t.Fatal("WALGroupCommit() = false, want true by default")
+	}
+}
+
+func TestWALAcceptsEveryFsyncPolicy(t *testing.T) {
+	for _, policy := range []string{"always", "everysec", "no"} {
+		cfg := walConfig()
+		cfg.Persistence.WAL.FsyncPolicy = policy
+
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() with fsync_policy %q error = %v", policy, err)
+		}
+	}
+}
+
+func TestWALRejectsUnknownFsyncPolicy(t *testing.T) {
+	cfg := walConfig()
+	cfg.Persistence.WAL.FsyncPolicy = "sometimes"
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted an unknown fsync_policy")
+	}
+}
+
+func TestLoadReadsFsyncPolicyAndGroupCommit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	contents := []byte(`
+server: {addr: ":0", read_timeout: 1, write_timeout: 1}
+replication: {role: "primary", backlog_size: 1024}
+persistence:
+  wal: {enabled: true, filename: memkv.wal, rewrite_interval: 60, fsync_policy: everysec, group_commit: false}
+  snapshot: {enabled: false}
+datastructure:
+  expiration: {check_interval: 1}
+memory: {}
+`)
+
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := app.LoadConfig(path)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := cfg.WALSyncPolicy(); got != "everysec" {
+		t.Fatalf("WALSyncPolicy() = %q, want everysec", got)
+	}
+
+	if cfg.WALGroupCommit() {
+		t.Fatal("WALGroupCommit() = true, want false")
+	}
+}

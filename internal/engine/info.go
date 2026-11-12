@@ -74,6 +74,11 @@ func buildInfo(connContext *ConnContext, section string) string {
 	if show("persistence") {
 		lines = append(lines, "wal_enabled:"+boolStr(connContext.system.WALEnabled))
 		lines = append(lines, "snapshot_enabled:"+boolStr(connContext.system.SnapshotEnabled))
+
+		if group := connContext.group; group != nil {
+			lines = append(lines, "wal_group_commit_syncs:"+strconv.FormatUint(group.syncs.Load(), 10))
+			lines = append(lines, "wal_group_commit_writes:"+strconv.FormatUint(group.writes.Load(), 10))
+		}
 	}
 
 	if show("stats") {

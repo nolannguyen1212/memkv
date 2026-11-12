@@ -72,6 +72,10 @@ func (ctx *Context) appendWAL(batch mutation.Batch) error {
 		return nil
 	}
 
+	if deferred, err := ctx.appendDeferred(batch); deferred {
+		return err
+	}
+
 	if appender, ok := ctx.WAL.(WALBatchAppender); ok {
 		return appender.AppendBatch(batch)
 	}
@@ -84,6 +88,11 @@ func (ctx *Context) appendWAL(batch mutation.Batch) error {
 }
 
 func (ctx *Context) propagate(batch mutation.Batch) {
+	if ctx.groupActive() {
+		ctx.group.batches = append(ctx.group.batches, batch)
+		return
+	}
+
 	if ctx.Replication != nil {
 		ctx.Replication.Propagate(batch)
 	}

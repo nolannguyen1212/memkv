@@ -25,11 +25,25 @@ type Log struct {
 	file        *os.File
 	enabled     bool
 	isReplaying atomic.Bool
+	policy      SyncPolicy
+	dirty       bool
+	syncErr     error
+	syncFile    func(*os.File) error
+	syncStop    chan struct{}
+	syncStopped chan struct{}
 }
 
 func Open(path string, enabled bool) (*Log, error) {
+	return OpenWithPolicy(path, enabled, SyncAlways)
+}
+
+func OpenWithPolicy(path string, enabled bool, policy SyncPolicy) (*Log, error) {
 	if !enabled {
 		return &Log{enabled: false}, nil
+	}
+
+	if _, err := ParseSyncPolicy(string(policy)); err != nil {
+		return nil, err
 	}
 
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, filePerm)
@@ -38,7 +52,15 @@ func Open(path string, enabled bool) (*Log, error) {
 		return nil, err
 	}
 
-	return &Log{file: file, enabled: true}, nil
+	log := &Log{file: file, enabled: true, policy: policy, syncFile: syncOSFile}
+
+	if policy == SyncEverySec {
+		log.syncStop = make(chan struct{})
+		log.syncStopped = make(chan struct{})
+		go log.runBackgroundSync(log.syncStop, log.syncStopped)
+	}
+
+	return log, nil
 }
 
 func (log *Log) Append(command mutation.Command) error {
@@ -49,7 +71,15 @@ func (log *Log) AppendBatch(batch mutation.Batch) error {
 	return log.append(batch)
 }
 
+func (log *Log) AppendBatchDeferred(batch mutation.Batch) error {
+	return log.write(batch, false)
+}
+
 func (log *Log) append(batch mutation.Batch) error {
+	return log.write(batch, true)
+}
+
+func (log *Log) write(batch mutation.Batch, applyPolicy bool) error {
 	if !log.enabled || log.isReplaying.Load() {
 		return nil
 	}
@@ -63,11 +93,21 @@ func (log *Log) append(batch mutation.Batch) error {
 	log.mutex.Lock()
 	defer log.mutex.Unlock()
 
+	if log.syncErr != nil {
+		return log.syncErr
+	}
+
 	if err := writeAll(log.file, record); err != nil {
 		return err
 	}
 
-	return log.file.Sync()
+	log.dirty = true
+
+	if applyPolicy && log.policy == SyncAlways {
+		return log.syncLocked()
+	}
+
+	return nil
 }
 
 func (log *Log) Load(path string, dispatch func(mutation.Command) error) error {
@@ -225,7 +265,19 @@ func (log *Log) Close() error {
 		return nil
 	}
 
-	return log.file.Close()
+	log.mutex.Lock()
+	stop, stopped := log.syncStop, log.syncStopped
+	log.syncStop = nil
+	log.mutex.Unlock()
+
+	if stop != nil {
+		close(stop)
+		<-stopped
+	}
+
+	log.mutex.Lock()
+	defer log.mutex.Unlock()
+	return errors.Join(log.syncLocked(), log.file.Close())
 }
 
 func (log *Log) RewriteAll(
@@ -258,6 +310,7 @@ func (log *Log) RewriteAll(
 
 	oldFile := log.file
 	log.file = newFile
+	log.dirty = false
 	var closeErr error
 
 	if oldFile != nil {

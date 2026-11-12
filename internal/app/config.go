@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nolannguyen1212/memkv/internal/resp"
+	"github.com/nolannguyen1212/memkv/internal/wal"
 	"gopkg.in/yaml.v3"
 )
 
@@ -53,6 +54,8 @@ type WALConfig struct {
 	Filename        string `yaml:"filename"`
 	RewriteInterval int    `yaml:"rewrite_interval"`
 	MaxSizeMB       int    `yaml:"max_size_mb"`
+	FsyncPolicy     string `yaml:"fsync_policy"`
+	GroupCommit     *bool  `yaml:"group_commit"`
 }
 
 type SnapshotConfig struct {
@@ -152,6 +155,10 @@ func (c Config) Validate() error {
 		if c.Persistence.WAL.MaxSizeMB < 0 {
 			return fmt.Errorf("persistence.wal.max_size_mb cannot be negative")
 		}
+
+		if _, err := wal.ParseSyncPolicy(string(c.WALSyncPolicy())); err != nil {
+			return fmt.Errorf("persistence.wal.fsync_policy: %w", err)
+		}
 	}
 
 	if snapshotFilenameMissing(c.Persistence.Snapshot) {
@@ -241,6 +248,22 @@ func (c Config) ReadTimeout() time.Duration {
 
 func (c Config) WriteTimeout() time.Duration {
 	return time.Duration(c.Server.WriteTimeout) * time.Second
+}
+
+func (c Config) WALSyncPolicy() wal.SyncPolicy {
+	if c.Persistence.WAL.FsyncPolicy == "" {
+		return wal.SyncAlways
+	}
+
+	return wal.SyncPolicy(c.Persistence.WAL.FsyncPolicy)
+}
+
+func (c Config) WALGroupCommit() bool {
+	if c.Persistence.WAL.GroupCommit == nil {
+		return true
+	}
+
+	return *c.Persistence.WAL.GroupCommit
 }
 
 func (c Config) WALRewriteInterval() time.Duration {

@@ -22,6 +22,8 @@ persistence:
     filename: "memkv.wal"
     rewrite_interval: 3600
     max_size_mb: 64
+    fsync_policy: always
+    group_commit: true
   snapshot:
     enabled: false
     filename: "dump.mksp"

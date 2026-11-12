@@ -46,8 +46,35 @@ Each key holds one entry with a type, a value, a version number, and an optional
 
 Both mechanisms are optional.
 
-- **WAL (write-ahead log)**: each write is appended to the log and flushed to disk *before* it changes memory. If writing the log fails, the command fails and later writes are rejected. On startup, MemKV replays the log. A half-written last record is trimmed; corruption in the middle stops startup.
+- **WAL (write-ahead log)**: each write is appended to the log and flushed to disk before the client gets a reply. If the log write or flush fails, later writes are rejected. On startup, MemKV replays the log. A half-written last record is trimmed; corruption in the middle stops startup. See [Fsync policy](#fsync-policy) for how often the log is flushed.
 - **Snapshot**: the full dataset is saved to a file on graceful shutdown. The snapshot remembers how far into the WAL it covers, so on startup MemKV loads the snapshot and replays only the newer part of the log.
+
+#### Fsync policy
+
+`persistence.wal.fsync_policy` sets when the WAL is flushed to disk:
+
+| Policy | Behavior | Data at risk after a crash |
+| --- | --- | --- |
+| `always` (default) | A write is acknowledged only after its record is flushed | None of the acknowledged writes |
+| `everysec` | A background goroutine flushes once per second | Up to one second of acknowledged writes |
+| `no` | Flushed on shutdown only, the OS decides otherwise | Whatever the OS had not flushed |
+
+With `always`, `persistence.wal.group_commit` (default `true`) lets the engine run every command already waiting in its queue, flush once, and then reply to all of them. Concurrent writers share one flush instead of paying for one each. Nothing waits on a timer, so a lone write is flushed immediately, and a group is capped at 256 commands. Replies and replica propagation still wait for the flush.
+
+In this mode the write is applied to memory before the flush. If the flush fails, the affected clients get an error, later writes are rejected, and memory can hold writes that were never acknowledged until the process restarts from the WAL. Set `group_commit: false` to flush before applying each command instead.
+
+A background flush failure under `everysec` is reported by the next write, and later writes are then rejected. `INFO persistence` reports `wal_group_commit_syncs` and `wal_group_commit_writes`, so the average group size is `writes / syncs`.
+
+Durable write throughput, from `go test -run '^$' -bench DurableSet -benchtime=3s ./internal/wal` (`SET` through the engine with a real WAL file and 50 concurrent clients, no TCP layer, Go 1.26.4, Apple M1 Pro):
+
+| Configuration | Time/op | Writes/sec |
+| --- | --- | --- |
+| `always`, no group commit | 4.130 ms | ~242 |
+| `always`, group commit | 140.4 µs | ~7,100 |
+| `everysec` | 4.067 µs | ~246,000 |
+| `no` | 4.026 µs | ~248,000 |
+
+macOS flushes to the physical disk on every `fsync`, so the per-write cost is much higher than on a typical Linux SSD. Group commit spreads that cost across clients that wait together and does not speed up a single sequential client.
 
 ### Replication
 
@@ -148,6 +175,8 @@ persistence:
     filename: memkv.wal
     rewrite_interval: 3600   # seconds
     max_size_mb: 64
+    fsync_policy: always     # always | everysec | no
+    group_commit: true       # share one flush across queued writes (always only)
   snapshot:
     enabled: false
     filename: dump.mksp
