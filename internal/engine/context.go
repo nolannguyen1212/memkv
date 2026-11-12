@@ -67,6 +67,7 @@ type Context struct {
 	running           atomic.Bool
 	directMu          sync.Mutex
 	deriveCapacity    bool
+	group             *groupCommit
 }
 
 func NewContext(
