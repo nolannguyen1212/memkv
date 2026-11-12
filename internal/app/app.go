@@ -41,7 +41,7 @@ func New(cfg Config, logger *slog.Logger) (*Application, error) {
 		MaxKeys:                 cfg.Memory.MaxKeys,
 	})
 
-	log, err := wal.Open(cfg.Persistence.WAL.Filename, cfg.Persistence.WAL.Enabled)
+	log, err := wal.OpenWithPolicy(cfg.Persistence.WAL.Filename, cfg.Persistence.WAL.Enabled, cfg.WALSyncPolicy())
 
 	if err != nil {
 		return nil, fmt.Errorf("open WAL: %w", err)
@@ -60,6 +60,10 @@ func New(cfg Config, logger *slog.Logger) (*Application, error) {
 		WALEnabled:      cfg.Persistence.WAL.Enabled,
 		SnapshotEnabled: cfg.Persistence.Snapshot.Enabled,
 	})
+
+	if cfg.Persistence.WAL.Enabled && cfg.WALSyncPolicy() == wal.SyncAlways && cfg.WALGroupCommit() {
+		executionContext.EnableGroupCommit(engine.DefaultGroupCommitSize)
+	}
 
 	a := &Application{
 		config:      cfg,
