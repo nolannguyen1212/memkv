@@ -9,14 +9,9 @@ import (
 type SyncPolicy string
 
 const (
-	// SyncAlways fsyncs before every acknowledged write.
-	SyncAlways SyncPolicy = "always"
-	// SyncEverySec fsyncs in the background once per second, so a crash can lose
-	// up to one second of acknowledged writes.
+	SyncAlways   SyncPolicy = "always"
 	SyncEverySec SyncPolicy = "everysec"
-	// SyncNo never fsyncs on the write path and leaves flushing to the OS,
-	// except on Close.
-	SyncNo SyncPolicy = "no"
+	SyncNo       SyncPolicy = "no"
 )
 
 var everySecInterval = time.Second
@@ -34,8 +29,6 @@ func syncOSFile(file *os.File) error {
 	return file.Sync()
 }
 
-// Sync flushes every record appended since the last sync. It is a no-op when
-// nothing is pending.
 func (log *Log) Sync() error {
 	if !log.enabled {
 		return nil

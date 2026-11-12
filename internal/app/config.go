@@ -250,8 +250,6 @@ func (c Config) WriteTimeout() time.Duration {
 	return time.Duration(c.Server.WriteTimeout) * time.Second
 }
 
-// WALSyncPolicy returns the configured fsync policy, defaulting to "always" so
-// existing configs keep their durability guarantee.
 func (c Config) WALSyncPolicy() wal.SyncPolicy {
 	if c.Persistence.WAL.FsyncPolicy == "" {
 		return wal.SyncAlways
@@ -260,8 +258,6 @@ func (c Config) WALSyncPolicy() wal.SyncPolicy {
 	return wal.SyncPolicy(c.Persistence.WAL.FsyncPolicy)
 }
 
-// WALGroupCommit reports whether concurrent writes share one fsync. It only
-// applies to the "always" policy and defaults to enabled.
 func (c Config) WALGroupCommit() bool {
 	if c.Persistence.WAL.GroupCommit == nil {
 		return true

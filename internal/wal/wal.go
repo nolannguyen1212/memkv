@@ -71,8 +71,6 @@ func (log *Log) AppendBatch(batch mutation.Batch) error {
 	return log.append(batch)
 }
 
-// AppendBatchDeferred writes the batch without syncing it. The caller must
-// call Sync before acknowledging the write to a client.
 func (log *Log) AppendBatchDeferred(batch mutation.Batch) error {
 	return log.write(batch, false)
 }
